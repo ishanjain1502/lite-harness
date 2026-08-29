@@ -28,14 +28,30 @@ liteness run "Read README.md and tell me what this repository does." --provider 
 
 See `discussionDocs/` for design notes (`init.md`, `day_02.md`, `day_03.md`, `day_04.md`).
 
-Day 4 spine:
+Day 4 spine (Day 5 adds stop reasons, cancellation, concurrent tools, timeouts):
 
 ```
-AgentLoop → LLMProvider.stream → Agent.decide → ToolRegistry → Session.events
+AgentLoop → LLMProvider.stream → Agent.decide → ToolRegistry.dispatch → Session.events
 ```
 
 ## Tests
 
 ```bash
 pytest
+```
+
+### Durable sessions (Day 6)
+
+```bash
+# Run with JSONL log (created automatically, fsync per event)
+liteness run "Read README.md and summarize." --session-file ./sessions/demo.jsonl
+
+# Resume a session for another turn
+liteness run "Now explain the architecture." --session-file ./sessions/demo.jsonl
+
+# Recover orphan tool/call entries after a crash
+liteness recover ./sessions/demo.jsonl
+
+# Replay recorded LLM outputs from the log (no live model)
+liteness run "continue" --session-file ./sessions/demo.jsonl --replay
 ```

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from liteness.llm import ToolSchema
+from liteness.types import CancelToken
 
 
 @dataclass
@@ -27,6 +30,13 @@ class ToolResult:
         }
 
 
+@dataclass
+class DispatchCall:
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
 ToolHandler = Callable[[str, dict[str, Any]], ToolResult]
 
 
@@ -36,6 +46,7 @@ class ToolDefinition:
     description: str
     parameters: dict[str, Any]
     handler: ToolHandler
+    timeout_s: float | None = None
 
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -129,7 +140,72 @@ class ToolRegistry:
                 is_error=True,
                 error_code="UNKNOWN_TOOL",
             )
-        return tool.handler(call_id, arguments)
+        try:
+            return tool.handler(call_id, arguments)
+        except Exception as exc:  # noqa: BLE001 — harness normalizes tool throws
+            return ToolResult(
+                call_id=call_id,
+                name=name,
+                content=str(exc),
+                is_error=True,
+                error_code="TOOL_EXCEPTION",
+            )
+
+    def dispatch(
+        self,
+        calls: list[DispatchCall],
+        *,
+        default_timeout_s: float,
+        cancel: CancelToken | None = None,
+    ) -> list[ToolResult]:
+        """Execute multiple tool calls concurrently; preserve input order."""
+        if not calls:
+            return []
+
+        if len(calls) == 1:
+            return [self._execute_one(calls[0], default_timeout_s, cancel)]
+
+        with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+            futures = [
+                pool.submit(self._execute_one, call, default_timeout_s, cancel)
+                for call in calls
+            ]
+            return [future.result() for future in futures]
+
+    def _execute_one(
+        self,
+        call: DispatchCall,
+        default_timeout_s: float,
+        cancel: CancelToken | None,
+    ) -> ToolResult:
+        if cancel is not None and cancel.cancelled:
+            return ToolResult(
+                call_id=call.call_id,
+                name=call.name,
+                content="execution cancelled",
+                is_error=True,
+                error_code="CANCELLED",
+            )
+
+        tool = self._tools.get(call.name)
+        timeout_s = (
+            tool.timeout_s if tool is not None and tool.timeout_s is not None else default_timeout_s
+        )
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                self.execute, call.call_id, call.name, call.arguments
+            )
+            try:
+                return future.result(timeout=timeout_s)
+            except FuturesTimeoutError:
+                return ToolResult(
+                    call_id=call.call_id,
+                    name=call.name,
+                    content=f"tool timed out after {timeout_s}s",
+                    is_error=True,
+                    error_code="TOOL_TIMEOUT",
+                )
 
 
 def default_registry() -> ToolRegistry:

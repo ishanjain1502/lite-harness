@@ -10,6 +10,7 @@ from liteness.agent import Agent
 from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
 from liteness.loop import AgentLoop, LoopConfig
 from liteness.session import Session
+from liteness.types import StopReason
 from liteness.tools import (
     READ_FILE_TOOL,
     ToolDefinition,
@@ -46,6 +47,7 @@ def test_full_turn_produces_expected_events(tmp_path: Path) -> None:
     result = loop.run_turn(session, "Read README.md and summarize.")
 
     assert result.status == "completed"
+    assert result.stop_reason == StopReason.COMPLETED
     assert result.final_output == "The repository does harness things."
     event_types = [e.type for e in session.events]
     assert "turn/start" in event_types

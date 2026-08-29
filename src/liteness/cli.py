@@ -8,7 +8,8 @@ from pathlib import Path
 
 from liteness.llm import MockLLMProvider, MockStep, OpenAILLMProvider, ToolCallDraft
 from liteness.loop import AgentLoop, LoopConfig
-from liteness.session import Session
+from liteness.replay import ReplayLLMProvider
+from liteness.session import Session, find_orphan_tool_calls, recover_orphans
 from liteness.tools import ToolRegistry, default_registry
 
 
@@ -19,8 +20,11 @@ def _format_size(content: str) -> str:
     return f"{size} B"
 
 
-def _summarize_session(session: Session, result_steps: int) -> str:
+def _summarize_session(session: Session, result) -> str:
     lines = [f"Session: {session.session_id}", ""]
+    if session.log_path is not None:
+        lines.insert(1, f"Log: {session.log_path}")
+        lines.insert(2, "")
     turn = session._turn
     lines.append(f"Turn {turn}")
 
@@ -47,7 +51,11 @@ def _summarize_session(session: Session, result_steps: int) -> str:
                     lines.append(f"    -> final answer: {preview}...")
 
     lines.append("")
-    lines.append("Completed" if result_steps else "Stopped")
+    status_label = result.status.capitalize()
+    if hasattr(result, "stop_reason"):
+        lines.append(f"{status_label} ({result.stop_reason.value})")
+    else:
+        lines.append(status_label)
     return "\n".join(lines)
 
 
@@ -76,12 +84,24 @@ def _mock_for_readme_task(readme_path: str = "README.md") -> MockLLMProvider:
     )
 
 
+def _resolve_session(args: argparse.Namespace) -> Session:
+    if args.session_file:
+        return Session.open(args.session_file, recover=args.recover)
+    return Session()
+
+
+def _resolve_llm(args: argparse.Namespace, session: Session):
+    if args.replay:
+        return ReplayLLMProvider.from_session(session)
+    if args.provider == "openai":
+        return OpenAILLMProvider(model=args.model)
+    return _mock_for_readme_task(args.readme)
+
+
 def run_command(args: argparse.Namespace) -> int:
     registry = default_registry()
-    if args.provider == "openai":
-        llm = OpenAILLMProvider(model=args.model)
-    else:
-        llm = _mock_for_readme_task(args.readme)
+    session = _resolve_session(args)
+    llm = _resolve_llm(args, session)
 
     loop = AgentLoop(
         llm=llm,
@@ -93,10 +113,9 @@ def run_command(args: argparse.Namespace) -> int:
         ),
     )
 
-    session = Session()
     result = loop.run_turn(session, args.prompt)
 
-    print(_summarize_session(session, result.steps_run))
+    print(_summarize_session(session, result))
     if result.final_output:
         print()
         print(result.final_output)
@@ -108,6 +127,29 @@ def run_command(args: argparse.Namespace) -> int:
             print(f"  [{event.type}] turn={event.turn} step={event.step}")
 
     return 0 if result.status == "completed" else 1
+
+
+def recover_command(args: argparse.Namespace) -> int:
+    session = Session.load_from_jsonl(args.session_file, recover=False)
+    orphans = find_orphan_tool_calls(session.events)
+    if not orphans:
+        print(f"No orphan tool calls in {args.session_file}")
+        return 0
+
+    print(f"Found {len(orphans)} orphan tool call(s):")
+    for orphan in orphans:
+        print(f"  - {orphan.call_id} ({orphan.name}) turn={orphan.turn} step={orphan.step}")
+
+    recovered = recover_orphans(session)
+    print(f"Recovered {len(recovered)} tool/result event(s)")
+    return 0
+
+
+def export_command(args: argparse.Namespace) -> int:
+    session = Session.load_from_jsonl(args.session_file, recover=False)
+    session.export_jsonl(args.output)
+    print(f"Exported {len(session.events)} events to {args.output}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -129,8 +171,34 @@ def main(argv: list[str] | None = None) -> int:
         help="README path for mock demo (default: README.md)",
     )
     run_parser.add_argument("--max-steps", type=int, default=10)
+    run_parser.add_argument(
+        "--session-file",
+        metavar="PATH",
+        help="JSONL session log path (created if missing; appended on each event)",
+    )
+    run_parser.add_argument(
+        "--recover",
+        action="store_true",
+        help="Recover orphan tool/call events when opening --session-file",
+    )
+    run_parser.add_argument(
+        "--replay",
+        action="store_true",
+        help="Replay assistant/message from session log instead of live LLM",
+    )
     run_parser.add_argument("-v", "--verbose", action="store_true")
     run_parser.set_defaults(func=run_command)
+
+    recover_parser = sub.add_parser(
+        "recover", help="Synthesize tool/result for orphan tool/call events"
+    )
+    recover_parser.add_argument("session_file", help="JSONL session log path")
+    recover_parser.set_defaults(func=recover_command)
+
+    export_parser = sub.add_parser("export", help="Copy session log to another path")
+    export_parser.add_argument("session_file", help="Source JSONL session log")
+    export_parser.add_argument("output", help="Destination JSONL path")
+    export_parser.set_defaults(func=export_command)
 
     args = parser.parse_args(argv)
     return args.func(args)
