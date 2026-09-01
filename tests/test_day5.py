@@ -12,13 +12,8 @@ import pytest
 from liteness.llm import LLMProvider, LlmChunk, LlmRequest, MockLLMProvider, MockStep, ToolCallDraft
 from liteness.loop import AgentLoop, LoopConfig
 from liteness.session import Session
-from liteness.tools import (
-    READ_FILE_TOOL,
-    ToolDefinition,
-    ToolRegistry,
-    ToolResult,
-    default_registry,
-)
+from liteness.tools import ToolDefinition, ToolRegistry, ToolResult
+from liteness.testing import registry_with_plugins
 from liteness.types import CancelToken, LlmError, StopReason
 
 
@@ -45,7 +40,7 @@ def test_stop_reason_completed(tmp_path: Path) -> None:
     readme.write_text("hi", encoding="utf-8")
 
     session = Session()
-    result = AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry()).run_turn(
+    result = AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins()).run_turn(
         session, "read"
     )
 
@@ -74,7 +69,7 @@ def test_stop_reason_step_limit() -> None:
     session = Session()
     result = AgentLoop(
         llm=llm,
-        tools=default_registry(),
+        tools=registry_with_plugins(),
         config=LoopConfig(max_steps_per_turn=3),
     ).run_turn(session, "loop forever")
 
@@ -88,7 +83,7 @@ def test_stop_reason_turn_limit(tmp_path: Path) -> None:
     readme.write_text("x", encoding="utf-8")
     loop = AgentLoop(
         llm=_readme_mock(str(readme)),
-        tools=default_registry(),
+        tools=registry_with_plugins(),
         config=LoopConfig(max_turns_per_session=1),
     )
     session = Session()
@@ -106,7 +101,7 @@ def test_stop_reason_context_limit(tmp_path: Path) -> None:
     session = Session()
     result = AgentLoop(
         llm=_readme_mock(str(readme)),
-        tools=default_registry(),
+        tools=registry_with_plugins(),
         config=LoopConfig(max_context_chars=5),
     ).run_turn(session, "this message alone exceeds the tiny context budget")
 
@@ -117,7 +112,7 @@ def test_stop_reason_context_limit(tmp_path: Path) -> None:
 def test_stop_reason_agent_error() -> None:
     llm = MockLLMProvider(steps=[MockStep(step=1, content="")])
     session = Session()
-    result = AgentLoop(llm=llm, tools=default_registry()).run_turn(session, "empty")
+    result = AgentLoop(llm=llm, tools=registry_with_plugins()).run_turn(session, "empty")
 
     assert result.stop_reason == StopReason.AGENT_ERROR
     assert result.status == "error"
@@ -140,7 +135,7 @@ def test_llm_error_stop_reason() -> None:
     session = Session()
     result = AgentLoop(
         llm=FailingLLM(retryable=False),
-        tools=default_registry(),
+        tools=registry_with_plugins(),
     ).run_turn(session, "fail")
 
     assert result.stop_reason == StopReason.LLM_ERROR
@@ -153,7 +148,7 @@ def test_llm_retry_then_success() -> None:
     llm = FailingLLM(retryable=True, fail_times=2)
     result = AgentLoop(
         llm=llm,
-        tools=default_registry(),
+        tools=registry_with_plugins(),
         config=LoopConfig(llm_max_retries=3, llm_retry_delay_s=0),
     ).run_turn(session, "retry")
 
@@ -264,7 +259,13 @@ def test_concurrent_tool_calls(tmp_path: Path) -> None:
         ToolDefinition(
             name="read_file",
             description="timed read",
-            parameters=READ_FILE_TOOL.parameters,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Filesystem path to read"},
+                },
+                "required": ["path"],
+            },
             handler=timed_read,
         )
     )

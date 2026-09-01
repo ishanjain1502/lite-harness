@@ -1,0 +1,4 @@
+name: coder
+plugins:
+  - filesystem
+  - terminal

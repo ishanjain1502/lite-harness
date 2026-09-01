@@ -16,7 +16,7 @@ from liteness.session import (
     find_orphan_tool_calls,
     recover_orphans,
 )
-from liteness.tools import default_registry
+from liteness.testing import registry_with_plugins
 
 
 def _readme_mock(readme: str) -> MockLLMProvider:
@@ -43,7 +43,7 @@ def test_persist_events_to_jsonl(tmp_path: Path) -> None:
     log_path = tmp_path / "session.jsonl"
 
     session = Session.open(log_path)
-    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry())
+    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins())
     loop.run_turn(session, "read and summarize")
 
     assert log_path.exists()
@@ -58,7 +58,7 @@ def test_load_session_from_jsonl(tmp_path: Path) -> None:
     log_path = tmp_path / "session.jsonl"
 
     original = Session.open(log_path)
-    AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry()).run_turn(
+    AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins()).run_turn(
         original, "task"
     )
 
@@ -187,7 +187,7 @@ def test_resume_next_turn_from_jsonl(tmp_path: Path) -> None:
     log_path = tmp_path / "session.jsonl"
 
     session = Session.open(log_path)
-    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry())
+    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins())
     first = loop.run_turn(session, "first turn")
     assert first.stop_reason.value == "completed"
 
@@ -195,7 +195,7 @@ def test_resume_next_turn_from_jsonl(tmp_path: Path) -> None:
     assert resumed._turn == 1
 
     llm = MockLLMProvider(steps=[MockStep(step=1, content="second turn answer")])
-    second = AgentLoop(llm=llm, tools=default_registry()).run_turn(
+    second = AgentLoop(llm=llm, tools=registry_with_plugins()).run_turn(
         resumed, "second turn"
     )
 
@@ -234,7 +234,7 @@ def test_replay_llm_provider_from_session(tmp_path: Path) -> None:
     log_path = tmp_path / "session.jsonl"
 
     session = Session.open(log_path)
-    AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry()).run_turn(
+    AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins()).run_turn(
         session, "record for replay"
     )
 
@@ -257,7 +257,7 @@ def test_export_jsonl(tmp_path: Path) -> None:
     export_path = tmp_path / "export.jsonl"
 
     session = Session.open(log_path)
-    AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry()).run_turn(
+    AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins()).run_turn(
         session, "export me"
     )
 
@@ -273,7 +273,7 @@ def test_tool_call_persisted_before_result_in_log(tmp_path: Path) -> None:
     log_path = tmp_path / "session.jsonl"
 
     session = Session.open(log_path)
-    AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry()).run_turn(
+    AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins()).run_turn(
         session, "check order"
     )
 

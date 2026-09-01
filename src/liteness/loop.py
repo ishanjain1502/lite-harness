@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 from liteness.agent import (
     Agent,
@@ -16,6 +16,7 @@ from liteness.agent import (
     ToolCall,
     ToolCallsAction,
 )
+from liteness.context_builder import ContextBuilder
 from liteness.llm import LLMProvider, LlmChunk, LlmRequest
 from liteness.session import Session
 from liteness.tools import DispatchCall, ToolRegistry
@@ -57,11 +58,15 @@ class AgentLoop:
         tools: ToolRegistry,
         agent: Agent | None = None,
         config: LoopConfig | None = None,
+        context_builder: ContextBuilder | None = None,
+        event_sink: Callable[[str, dict], None] | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
         self.agent = agent or Agent()
         self.config = config or LoopConfig()
+        self.context_builder = context_builder or ContextBuilder()
+        self.event_sink = event_sink
 
     def run_turn(
         self,
@@ -109,7 +114,12 @@ class AgentLoop:
                 steps_run = step
                 session.append("step/start", {"step": step}, turn=turn, step=step)
 
-                messages = session.derive_messages()
+                built = self.context_builder.build(
+                    session,
+                    tools=schemas,
+                    memory_snapshot=None,
+                )
+                messages = built.messages
                 if self._context_over_limit(messages):
                     stop_reason = StopReason.CONTEXT_LIMIT
                     session.append(

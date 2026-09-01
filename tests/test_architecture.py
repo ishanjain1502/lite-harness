@@ -9,15 +9,11 @@ import pytest
 from liteness.agent import Agent
 from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
 from liteness.loop import AgentLoop, LoopConfig
+from liteness.plugins.filesystem import read_file_handler
 from liteness.session import Session
 from liteness.types import StopReason
-from liteness.tools import (
-    READ_FILE_TOOL,
-    ToolDefinition,
-    ToolRegistry,
-    ToolResult,
-    default_registry,
-)
+from liteness.tools import ToolDefinition, ToolRegistry, ToolResult
+from liteness.testing import registry_with_plugins
 
 
 def _readme_mock(readme: str = "README.md") -> MockLLMProvider:
@@ -43,7 +39,7 @@ def test_full_turn_produces_expected_events(tmp_path: Path) -> None:
     readme.write_text("# Demo\n\nA tiny harness.", encoding="utf-8")
 
     session = Session()
-    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry())
+    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins())
     result = loop.run_turn(session, "Read README.md and summarize.")
 
     assert result.status == "completed"
@@ -64,10 +60,10 @@ def test_can_replace_llm_without_touching_loop(tmp_path: Path) -> None:
     readme = tmp_path / "README.md"
     readme.write_text("hello", encoding="utf-8")
 
-    loop_a = AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry())
+    loop_a = AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins())
     loop_b = AgentLoop(
         llm=MockLLMProvider(steps=[MockStep(step=1, content="direct answer")]),
-        tools=default_registry(),
+        tools=registry_with_plugins(),
     )
 
     session_a = Session()
@@ -95,7 +91,13 @@ def test_can_replace_tool_without_touching_agent(tmp_path: Path) -> None:
         ToolDefinition(
             name="read_file",
             description="fake",
-            parameters=READ_FILE_TOOL.parameters,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Filesystem path to read"},
+                },
+                "required": ["path"],
+            },
             handler=fake_read,
         )
     )
@@ -113,7 +115,7 @@ def test_can_inspect_entire_execution(tmp_path: Path) -> None:
     readme.write_text("x", encoding="utf-8")
 
     session = Session()
-    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=default_registry())
+    loop = AgentLoop(llm=_readme_mock(str(readme)), tools=registry_with_plugins())
     loop.run_turn(session, "inspect me")
 
     assert len(session.events) > 0
@@ -141,7 +143,7 @@ def test_can_force_tool_call(tmp_path: Path) -> None:
         ]
     )
     session = Session()
-    AgentLoop(llm=llm, tools=default_registry()).run_turn(session, "force tool")
+    AgentLoop(llm=llm, tools=registry_with_plugins()).run_turn(session, "force tool")
 
     calls = [e for e in session.events if e.type == "tool/call"]
     assert len(calls) == 1
@@ -165,7 +167,7 @@ def test_can_force_tool_failure() -> None:
         ]
     )
     session = Session()
-    AgentLoop(llm=llm, tools=default_registry()).run_turn(session, "fail")
+    AgentLoop(llm=llm, tools=registry_with_plugins()).run_turn(session, "fail")
 
     results = [e for e in session.events if e.type == "tool/result"]
     assert results[0].payload["is_error"] is True
@@ -176,9 +178,9 @@ def test_deterministic_mock_replay() -> None:
     llm = MockLLMProvider(steps=steps)
 
     s1, s2 = Session(), Session()
-    AgentLoop(llm=llm, tools=default_registry()).run_turn(s1, "a")
+    AgentLoop(llm=llm, tools=registry_with_plugins()).run_turn(s1, "a")
     llm2 = MockLLMProvider(steps=steps)
-    AgentLoop(llm=llm2, tools=default_registry()).run_turn(s2, "a")
+    AgentLoop(llm=llm2, tools=registry_with_plugins()).run_turn(s2, "a")
 
     msgs1 = [e for e in s1.events if e.type == "assistant/message"]
     msgs2 = [e for e in s2.events if e.type == "assistant/message"]
@@ -202,7 +204,7 @@ def test_malformed_tool_args_inject_context() -> None:
         ]
     )
     session = Session()
-    AgentLoop(llm=llm, tools=default_registry()).run_turn(session, "bad args")
+    AgentLoop(llm=llm, tools=registry_with_plugins()).run_turn(session, "bad args")
 
     assert any(e.type == "inject/context" for e in session.events)
     assert not any(e.type == "tool/call" for e in session.events)
@@ -223,7 +225,7 @@ def test_agent_validates_allowed_tools() -> None:
             )
         ]
     )
-    registry = default_registry()
+    registry = registry_with_plugins()
     loop = AgentLoop(
         llm=llm,
         tools=registry,

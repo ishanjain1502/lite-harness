@@ -1,0 +1,4 @@
+name: researcher
+plugins:
+  - memory
+  - rag

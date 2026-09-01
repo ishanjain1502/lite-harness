@@ -6,11 +6,14 @@ import argparse
 import sys
 from pathlib import Path
 
+from liteness.harness import create_runtime, dispose_runtime
 from liteness.llm import MockLLMProvider, MockStep, OpenAILLMProvider, ToolCallDraft
 from liteness.loop import AgentLoop, LoopConfig
+from liteness.plugins import get_plugin
+from liteness.plugins.base import PluginConfigError
+from liteness.plugins.rag import RAGPlugin
 from liteness.replay import ReplayLLMProvider
 from liteness.session import Session, find_orphan_tool_calls, recover_orphans
-from liteness.tools import ToolRegistry, default_registry
 
 
 def _format_size(content: str) -> str:
@@ -98,22 +101,59 @@ def _resolve_llm(args: argparse.Namespace, session: Session):
     return _mock_for_readme_task(args.readme)
 
 
-def run_command(args: argparse.Namespace) -> int:
-    registry = default_registry()
-    session = _resolve_session(args)
-    llm = _resolve_llm(args, session)
+def _build_loop(
+    args: argparse.Namespace,
+    session: Session,
+    runtime=None,
+) -> AgentLoop:
+    if runtime is not None:
+        registry = runtime.ctx.tools
+        event_sink = lambda event_type, payload: runtime.ctx.emit(  # noqa: E731
+            "session/event", event_type, payload
+        )
+    else:
+        from liteness.context import Context
+        from liteness.plugins.filesystem import FilesystemPlugin
 
-    loop = AgentLoop(
-        llm=llm,
+        ctx = Context()
+        FilesystemPlugin().install(ctx, {})
+        registry = ctx.tools
+        event_sink = None
+
+    return AgentLoop(
+        llm=_resolve_llm(args, session),
         tools=registry,
         config=LoopConfig(
             max_steps_per_turn=args.max_steps,
             allowed_tools=registry.names(),
             model=args.model,
         ),
+        event_sink=event_sink,
     )
 
-    result = loop.run_turn(session, args.prompt)
+
+def run_command(args: argparse.Namespace) -> int:
+    session = _resolve_session(args)
+    runtime = None
+
+    if args.preset:
+        try:
+            runtime = create_runtime(
+                preset_name=args.preset,
+                session=session,
+                project_id=args.project_id,
+            )
+        except PluginConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    loop = _build_loop(args, session, runtime=runtime)
+
+    try:
+        result = loop.run_turn(session, args.prompt)
+    finally:
+        if runtime is not None:
+            dispose_runtime(runtime)
 
     print(_summarize_session(session, result))
     if result.final_output:
@@ -127,6 +167,27 @@ def run_command(args: argparse.Namespace) -> int:
             print(f"  [{event.type}] turn={event.turn} step={event.step}")
 
     return 0 if result.status == "completed" else 1
+
+
+def index_command(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    index_path = Path(args.index_file)
+
+    plugin = get_plugin("rag")
+    if not isinstance(plugin, RAGPlugin):
+        print("Error: rag plugin is not available", file=sys.stderr)
+        return 1
+
+    try:
+        count = plugin.ingest_path(path)
+        plugin.save_index(index_path)
+    except PluginConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Indexed {count} chunk(s) from {path}")
+    print(f"Wrote index to {index_path}")
+    return 0
 
 
 def recover_command(args: argparse.Namespace) -> int:
@@ -159,6 +220,15 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = sub.add_parser("run", help="Run one turn")
     run_parser.add_argument("prompt", help="User task prompt")
     run_parser.add_argument(
+        "--preset",
+        help="Built-in agent preset (e.g. researcher, coder)",
+    )
+    run_parser.add_argument(
+        "--project-id",
+        default="default",
+        help="Project namespace for memory (default: default)",
+    )
+    run_parser.add_argument(
         "--provider",
         choices=["mock", "openai"],
         default="mock",
@@ -188,6 +258,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_parser.add_argument("-v", "--verbose", action="store_true")
     run_parser.set_defaults(func=run_command)
+
+    index_parser = sub.add_parser("index", help="Build RAG index from markdown docs")
+    index_parser.add_argument("path", help="Markdown file or directory to index")
+    index_parser.add_argument(
+        "--index-file",
+        default=".liteness/rag-index.json",
+        help="Where to write the RAG index (default: .liteness/rag-index.json)",
+    )
+    index_parser.set_defaults(func=index_command)
 
     recover_parser = sub.add_parser(
         "recover", help="Synthesize tool/result for orphan tool/call events"

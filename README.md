@@ -26,12 +26,25 @@ liteness run "Read README.md and tell me what this repository does." --provider 
 
 ## Architecture
 
-See `discussionDocs/` for design notes (`init.md`, `day_02.md`, `day_03.md`, `day_04.md`).
+See `discussionDocs/` for design notes (`init.md` through `day_07.md`).
 
-Day 4 spine (Day 5 adds stop reasons, cancellation, concurrent tools, timeouts):
+Day 7 adds plugin composition, presets, memory, and RAG:
 
 ```
-AgentLoop → LLMProvider.stream → Agent.decide → ToolRegistry.dispatch → Session.events
+Preset → Plugins → Context (tools, events, effect)
+                         ↓
+              AgentLoop → LLM → Session events
+```
+
+### Presets
+
+```bash
+# Coder: filesystem + terminal
+liteness run --preset coder "Read README.md and summarize."
+
+# Researcher: memory + RAG (index docs first)
+liteness index discussionDocs/
+liteness run --preset researcher "What does day_06 say about session recovery?"
 ```
 
 ## Tests
