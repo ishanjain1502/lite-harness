@@ -110,8 +110,10 @@ def _build_loop(
     runtime=None,
 ) -> AgentLoop:
     telemetry_plugin: TelemetryPlugin | None = None
+    system_prompt: str | None = None
     if runtime is not None:
         registry = runtime.ctx.tools
+        system_prompt = runtime.preset.system_prompt
         telemetry_plugin = runtime.ctx.services.get("telemetry")
         if telemetry_plugin is None and getattr(args, "telemetry", False):
             telemetry_plugin = TelemetryPlugin()
@@ -152,6 +154,7 @@ def _build_loop(
             max_steps_per_turn=args.max_steps,
             allowed_tools=registry.names(),
             model=model,
+            system_prompt=system_prompt,
             budget=getattr(args, "budget_config", None),
         ),
         event_sink=event_sink,
@@ -293,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("prompt", help="User task prompt")
     run_parser.add_argument(
         "--preset",
-        help="Built-in agent preset (e.g. researcher, coder)",
+        help="Built-in agent preset (e.g. researcher, coder, video_editor)",
     )
     run_parser.add_argument(
         "--project-id",

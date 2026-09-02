@@ -131,6 +131,7 @@ def test_google_missing_sdk_raises_on_client() -> None:
 def test_messages_to_gemini_contents() -> None:
     pytest.importorskip("google.genai")
     messages = [
+        Message(role="system", content="You are helpful."),
         Message(role="user", content="Hello"),
         Message(role="assistant", content="Hi there"),
         Message(
@@ -140,7 +141,8 @@ def test_messages_to_gemini_contents() -> None:
             name="read_file",
         ),
     ]
-    contents = messages_to_gemini_contents(messages)
+    contents, system_instruction = messages_to_gemini_contents(messages)
+    assert system_instruction == "You are helpful."
     assert len(contents) == 3
     assert contents[0].role == "user"
     assert contents[0].parts[0].text == "Hello"

@@ -47,6 +47,11 @@ def _plugin_config(
     if spec.name == "rag":
         config.setdefault("index_path", ".liteness/rag-index.json")
 
+    if spec.name == "video":
+        config.setdefault("output_dir", "./video-output")
+        config.setdefault("vision_provider", "google")
+        config.setdefault("vision_model", "gemini-2.0-flash")
+
     return config
 
 

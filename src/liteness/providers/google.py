@@ -11,13 +11,16 @@ from liteness.session import Message
 from liteness.types import LlmError
 
 
-def messages_to_gemini_contents(messages: list[Message]) -> list[Any]:
-    """Convert harness Message list to Gemini Content objects."""
+def messages_to_gemini_contents(messages: list[Message]) -> tuple[list[Any], str | None]:
+    """Convert harness Message list to Gemini Content objects and system instruction."""
     from google.genai import types
 
+    system_parts: list[str] = []
     contents: list[Any] = []
     for msg in messages:
-        if msg.role == "user":
+        if msg.role == "system":
+            system_parts.append(msg.content)
+        elif msg.role == "user":
             contents.append(
                 types.Content(role="user", parts=[types.Part(text=msg.content)])
             )
@@ -40,7 +43,8 @@ def messages_to_gemini_contents(messages: list[Message]) -> list[Any]:
                     ],
                 )
             )
-    return contents
+    system_instruction = "\n\n".join(system_parts) if system_parts else None
+    return contents, system_instruction
 
 
 def tools_to_gemini(tools: list[ToolSchema]) -> list[Any]:
@@ -118,12 +122,14 @@ class GoogleLLMProvider(LLMProvider):
 
         client = self._get_client()
         model = request.model or self.model
-        contents = messages_to_gemini_contents(request.messages)
+        contents, system_instruction = messages_to_gemini_contents(request.messages)
         gemini_tools = tools_to_gemini(request.tools)
 
         config_kwargs: dict[str, Any] = {}
         if gemini_tools:
             config_kwargs["tools"] = gemini_tools
+        if system_instruction:
+            config_kwargs["system_instruction"] = system_instruction
         config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 
         self._last_usage = None

@@ -50,6 +50,7 @@ class LoopConfig:
     max_context_chars: int | None = None
     allowed_tools: list[str] | None = None
     model: str = "mock"
+    system_prompt: str | None = None
     default_tool_timeout_s: float = 30.0
     llm_max_retries: int = 3
     llm_retry_delay_s: float = 3.0
@@ -176,6 +177,7 @@ class AgentLoop:
                     session,
                     tools=schemas,
                     memory_snapshot=None,
+                    system_prompt=self.config.system_prompt,
                 )
                 messages = built.messages
                 if self._context_over_limit(messages):

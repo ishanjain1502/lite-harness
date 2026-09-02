@@ -21,6 +21,7 @@ class PluginSpec:
 class Preset:
     name: str
     plugins: list[PluginSpec]
+    system_prompt: str | None = None
 
 
 def _package_presets_dir() -> Path:
@@ -60,4 +61,8 @@ def load_preset(name: str, *, presets_dir: Path | None = None) -> Preset:
             continue
         raise PluginConfigError(f"invalid plugin entry in preset {path}")
 
-    return Preset(name=preset_name, plugins=plugins)
+    system_prompt = raw.get("system_prompt")
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        raise PluginConfigError(f"preset {path} system_prompt must be a string")
+
+    return Preset(name=preset_name, plugins=plugins, system_prompt=system_prompt)

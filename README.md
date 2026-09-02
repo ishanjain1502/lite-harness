@@ -78,7 +78,14 @@ liteness run --preset coder "Read README.md and summarize."
 # Researcher: memory + RAG (index docs first)
 liteness index discussionDocs/
 liteness run --preset researcher "What does day_06 say about session recovery?"
+
+# Video editor: ffmpeg tools + Gemini vision for natural-language edits
+# Requires ffmpeg on PATH and GOOGLE_API_KEY for scene analysis
+liteness run --preset video_editor --provider google --max-steps 15 \
+  "Remove the intro from my-video.mp4"
 ```
+
+Output videos are written to `./video-output/` by default.
 
 ## Tests
 
