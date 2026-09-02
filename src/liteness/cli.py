@@ -17,6 +17,7 @@ from liteness.plugins.telemetry import TelemetryPlugin
 from liteness.replay import ReplayLLMProvider
 from liteness.session import Session, find_orphan_tool_calls, recover_orphans
 from liteness.telemetry.projector import format_trace_report, project_events
+from liteness.repl import ReplConfig, ReplSession
 
 
 def _format_size(content: str) -> str:
@@ -164,6 +165,21 @@ def _build_loop(
 def run_command(args: argparse.Namespace) -> int:
     session = _resolve_session(args)
     runtime = None
+    # run_command handles a single-turn prompt; repl_command starts an interactive REPL session
+
+def repl_command(args: argparse.Namespace) -> int:
+    config = ReplConfig(
+        preset=args.preset,
+        provider=args.provider,
+        model=args.model,
+        project_id=args.project_id,
+        max_steps=args.max_steps,
+        session_file=args.session_file,
+        readme=args.readme,
+        telemetry=args.telemetry,
+        verbose=args.verbose,
+    )
+    return ReplSession(config).run()
 def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime | None:
     if not args.preset:
         return None
@@ -352,6 +368,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Enable live telemetry plugin during the run",
     )
     run_parser.set_defaults(func=run_command)
+
+    repl_parser = sub.add_parser("repl", help="Interactive REPL — one live session across prompts")
+    repl_parser.add_argument("--preset", help="Built-in agent preset (e.g. researcher, coder, video_editor)")
+    repl_parser.add_argument("--project-id", default="default", help="Project namespace for memory (default: default)")
+    repl_parser.add_argument(
+        "--provider",
+        choices=["mock", "openai", "google", "commandcode"],
+        default="mock",
+        help="LLM provider (default: mock)",
+    )
+    repl_parser.add_argument("--model", default=None, help="Model id (provider default if omitted)")
+    repl_parser.add_argument("--readme", default="README.md", help="README path for mock demo (default: README.md)")
+    repl_parser.add_argument("--max-steps", type=int, default=10)
+    repl_parser.add_argument("--session-file", metavar="PATH", default=None)
+    repl_parser.add_argument("--telemetry", action="store_true")
+    repl_parser.add_argument("-v", "--verbose", action="store_true")
+    repl_parser.set_defaults(func=repl_command)
 
     report_parser = sub.add_parser("report", help="Build telemetry report from session JSONL")
     report_parser.add_argument("session_file", help="JSONL session log path")

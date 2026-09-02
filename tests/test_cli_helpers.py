@@ -34,3 +34,10 @@ def test_build_runtime_raises_for_unknown_preset(tmp_path: Path) -> None:
     with pytest.raises(PluginConfigError):
         _build_runtime(_args(preset="nope"), session)
 
+
+def test_repl_subcommand_is_registered() -> None:
+    from liteness.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["repl", "--help"])
+
