@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -252,4 +253,39 @@ def test_repl_reraises_cancelled_error() -> None:
 
     assert repl.loop.event_sink is original_sink
     assert not any("unexpected error" in output for output in outputs)
+
+
+def test_repl_cancel_mid_turn_returns_to_prompt(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(_config(), input_fn=_iter_input(["slow", ":q"]), output_fn=outputs.append)
+
+    started = threading.Event()
+    cancel_event = threading.Event()
+
+    class _BlockingLLM(MockLLMProvider):
+        def stream(self, request):
+            started.set()
+            cancel_event.wait(5.0)
+            from liteness.types import LlmError
+            raise LlmError("LLM_ERROR", "should have been cancelled", retryable=False)
+
+    repl.session = Session()
+    repl.runtime = None
+    repl.loop = AgentLoop(llm=_BlockingLLM(steps=[]), tools=registry_with_plugins())
+
+    # Thread that trips the per-turn CancelToken once the turn starts.
+    def _trip():
+        started.wait(5.0)
+        assert repl._current_cancel is not None
+        repl._current_cancel.cancel()
+
+    t = threading.Thread(target=_trip)
+    t.start()
+    code = repl.run()
+    t.join(timeout=5)
+    joined = "\n".join(outputs)
+    assert code == 0
+    assert "user_cancelled" in joined
+    # REPL returned to the prompt and processed :q
+    assert repl.session._turn == 1
 

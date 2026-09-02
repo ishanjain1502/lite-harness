@@ -535,10 +535,19 @@ class AgentLoop:
                 raise CancelledError()
 
             try:
-                return list(self.llm.stream(request))
+                chunks: list[LlmChunk] = []
+                for chunk in self.llm.stream(request):
+                    if cancel is not None:
+                        cancel.check()
+                    chunks.append(chunk)
+                if cancel is not None:
+                    cancel.check()
+                return chunks
             except CancelledError:
                 raise
             except LlmError as exc:
+                if cancel is not None and cancel.cancelled:
+                    raise CancelledError() from exc
                 last_error = exc
                 if (
                     not exc.retryable
@@ -548,6 +557,8 @@ class AgentLoop:
                 if attempt == cfg.max_attempts - 1:
                     raise
             except Exception as exc:
+                if cancel is not None and cancel.cancelled:
+                    raise CancelledError() from exc
                 wrapped = LlmError("LLM_ERROR", str(exc), retryable=False)
                 last_error = wrapped
                 raise wrapped from exc

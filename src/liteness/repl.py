@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 from dataclasses import dataclass
 from typing import Callable
 
@@ -50,6 +51,7 @@ class ReplSession:
         self.session: Session | None = None
         self.runtime: HarnessRuntime | None = None
         self.loop: AgentLoop | None = None
+        self._current_cancel = None
 
     def run(self) -> int:
         if self.session is None:
@@ -124,19 +126,27 @@ class ReplSession:
 
     def _run_turn(self, prompt: str) -> None:
         cancel = CancelToken()
+        self._current_cancel = cancel
         self._out(f"you> {prompt}")
         streamed: list[str] = []
 
         def event_sink(event) -> None:
             self._on_event(event, streamed)
 
+        prev_sigint = signal.getsignal(signal.SIGINT)
+
+        def _on_sigint(*_args) -> None:
+            cancel.cancel()
+
         loop = self.loop
         prev_sink = None
         if loop is None:
             self._out("Error: no loop configured")
+            self._current_cancel = None
             return
         prev_sink = loop.event_sink
         try:
+            signal.signal(signal.SIGINT, _on_sigint)
             loop.event_sink = event_sink
             try:
                 result = loop.run_turn(self.session, prompt, cancel=cancel)  # type: ignore[arg-type]
@@ -148,7 +158,9 @@ class ReplSession:
                 self._out(f"[unexpected error: {exc}]")
                 return
         finally:
+            signal.signal(signal.SIGINT, prev_sigint)
             loop.event_sink = prev_sink
+            self._current_cancel = None
 
         if streamed:
             self._out("")
