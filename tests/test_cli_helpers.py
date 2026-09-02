@@ -35,9 +35,13 @@ def test_build_runtime_raises_for_unknown_preset(tmp_path: Path) -> None:
         _build_runtime(_args(preset="nope"), session)
 
 
-def test_repl_subcommand_is_registered() -> None:
+def test_repl_subcommand_is_registered(capsys) -> None:
     from liteness.cli import main
-
+    
+    # Running top-level help shows the list of subcommands and their short help.
     with pytest.raises(SystemExit):
-        main(["repl", "--help"])
+        main(["--help"])
+    captured = capsys.readouterr()
+    assert "repl" in captured.out
+    assert "Interactive REPL" in captured.out
 
