@@ -32,6 +32,8 @@ def _format_size(content: str) -> str:
     if size >= 1024:
         return f"{size / 1024:.1f} KB"
     return f"{size} B"
+class _QuitRepl(Exception):
+    """Internal control-flow signal for :q commands."""
 
 class ReplSession:
     def __init__(
@@ -108,7 +110,11 @@ class ReplSession:
                 self._dispose()
                 return 0
             if stripped.startswith(":"):
-                self._out(f"unknown command: {stripped}")
+                try:
+                    self._handle_command(stripped)
+                except _QuitRepl:
+                    self._dispose()
+                    return 0
                 continue
             self._run_turn(stripped)
 
@@ -166,4 +172,47 @@ class ReplSession:
         if self.runtime is not None:
             dispose_runtime(self.runtime)
             self.runtime = None
+    def _handle_command(self, line: str) -> bool:
+        parts = line.split(maxsplit=1)
+        cmd = parts[0]
+        arg = parts[1].strip() if len(parts) > 1 else None
 
+        if cmd in _QUIT_COMMANDS:
+            self._dispose()
+            raise _QuitRepl()
+
+        if cmd == ":tools":
+            names = self.loop.tools.names() if self.loop else []
+            self._out(", ".join(names) if names else "(no tools)")
+            return True
+
+        if cmd == ":history":
+            for e in self.session.events:  # type: ignore[union-attr]
+                self._out(f"  [{e.type}] turn={e.turn} step={e.step}")
+            return True
+
+        if cmd == ":report":
+            from liteness.telemetry.projector import format_trace_report, project_events
+
+            self._out(format_trace_report(project_events(self.session.events)))  # type: ignore[arg-type]
+            return True
+
+        if cmd == ":reset":
+            self._do_reset()
+            return True
+
+        if cmd == ":preset":
+            if not arg:
+                self._out("usage: :preset <name>")
+                return True
+            self._do_preset(arg)
+            return True
+
+        self._out(f"unknown command: {line}")
+        return True
+
+    def _do_reset(self) -> None:
+        self._out(":reset not yet implemented")
+
+    def _do_preset(self, name: str) -> None:
+        self._out(f":preset not yet implemented: {name}")
