@@ -27,7 +27,11 @@ class ReplConfig:
 
 
 _QUIT_COMMANDS = {":q", ":quit", ":exit"}
-
+def _format_size(content: str) -> str:
+    size = len(content.encode("utf-8"))
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
 
 class ReplSession:
     def __init__(
@@ -51,7 +55,8 @@ class ReplSession:
         except Exception as exc:
             self._out(f"Error: {exc}")
             return 1
-        self.loop = self._build_loop()
+        if self.loop is None:
+            self.loop = self._build_loop()
         self._print_banner()
         return self._read_loop()
 
@@ -105,7 +110,57 @@ class ReplSession:
             if stripped.startswith(":"):
                 self._out(f"unknown command: {stripped}")
                 continue
-            self._out(f"(turns not yet implemented: {stripped!r})")
+            self._run_turn(stripped)
+
+    def _run_turn(self, prompt: str) -> None:
+        from liteness.types import CancelToken
+
+        cancel = CancelToken()
+        self._out(f"you> {prompt}")
+        streamed: list[str] = []
+
+        def event_sink(event) -> None:
+            self._on_event(event, streamed)
+
+        loop = self.loop
+        prev_sink = None
+        if loop is None:
+            self._out("Error: no loop configured")
+            return
+        prev_sink = loop.event_sink
+        try:
+            loop.event_sink = event_sink
+            result = loop.run_turn(self.session, prompt, cancel=cancel)  # type: ignore[arg-type]
+        finally:
+            loop.event_sink = prev_sink
+
+        if streamed:
+            self._out("")
+        if result.final_output and result.final_output not in "".join(streamed):
+            self._out(result.final_output)
+        self._out(f"[turn {result.turn} · {result.status} · {result.stop_reason.value} · {result.steps_run} steps]")
+
+    def _on_event(self, event, streamed: list[str]) -> None:
+        if event.type == "assistant/chunk":
+            delta = event.payload.get("content_delta") or ""
+            if delta:
+                self._out(delta)
+                streamed.append(delta)
+            for d in event.payload.get("tool_call_deltas") or []:
+                name = d.get("name")
+                if name:
+                    self._out(f"\n-> tool: {name}")
+        elif event.type == "assistant/message":
+            content = event.payload.get("content", "")
+            if content:
+                self._out(content)
+                streamed.append(content)
+        elif event.type == "tool/result":
+            content = event.payload.get("content", "")
+            if event.payload.get("is_error"):
+                self._out(f"-> error: {content[:80]}")
+            else:
+                self._out(f"-> result: {_format_size(content)}")
 
     def _dispose(self) -> None:
         if self.runtime is not None:
