@@ -164,14 +164,19 @@ def _build_loop(
 def run_command(args: argparse.Namespace) -> int:
     session = _resolve_session(args)
     runtime = None
+def _build_runtime(args: argparse.Namespace, session: Session):
+    if not args.preset:
+        return None
+    return create_runtime(
+        preset_name=args.preset,
+        session=session,
+        project_id=args.project_id,
+    )
+
 
     if args.preset:
         try:
-            runtime = create_runtime(
-                preset_name=args.preset,
-                session=session,
-                project_id=args.project_id,
-            )
+            runtime = _build_runtime(args, session)
         except PluginConfigError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
