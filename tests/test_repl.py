@@ -8,6 +8,7 @@ from liteness.repl import ReplConfig, ReplSession
 from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
 from liteness.loop import AgentLoop
 from liteness.session import Session
+from liteness.harness import create_runtime
 from liteness.testing import registry_with_plugins
 
 
@@ -78,4 +79,28 @@ def test_repl_blank_lines_are_ignored(tmp_path: Path) -> None:
     _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="ok")]))
     assert repl.run() == 0
     assert repl.session._turn == 0
+
+
+def test_repl_preset_switch_in_place(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(preset="coder"),
+        input_fn=_iter_input([":preset researcher", ":q"]),
+        output_fn=outputs.append,
+    )
+    # Build an initial coder runtime + loop so the switch has something to dispose.
+    repl.session = Session()
+    repl.runtime = create_runtime(preset_name="coder", session=repl.session, project_id="default")
+    repl.loop = AgentLoop(
+        llm=MockLLMProvider(steps=[MockStep(step=1, content="ok")]),
+        tools=repl.runtime.ctx.tools,
+    )
+    before_id = repl.session.session_id
+    before_turn = repl.session._turn
+    repl.run()
+    # runtime was rebuilt for researcher; tools differ from coder
+    assert any(("memory" in n) or ("rag" in n) for n in repl.runtime.ctx.tools.names())
+    assert repl.session.session_id == before_id  # same session retained
+    assert repl.session._turn == before_turn
+    assert "switched to preset: researcher" in "\n".join(outputs)
 

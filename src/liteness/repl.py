@@ -51,7 +51,8 @@ class ReplSession:
         self.loop: AgentLoop | None = None
 
     def run(self) -> int:
-        self.session = self._open_session()
+        if self.session is None:
+            self.session = self._open_session()
         try:
             self.runtime = self._build_runtime()
         except Exception as exc:
@@ -106,14 +107,10 @@ class ReplSession:
             stripped = line.strip()
             if not stripped:
                 continue
-            if stripped in _QUIT_COMMANDS:
-                self._dispose()
-                return 0
             if stripped.startswith(":"):
                 try:
                     self._handle_command(stripped)
                 except _QuitRepl:
-                    self._dispose()
                     return 0
                 continue
             self._run_turn(stripped)
@@ -178,7 +175,6 @@ class ReplSession:
         arg = parts[1].strip() if len(parts) > 1 else None
 
         if cmd in _QUIT_COMMANDS:
-            self._dispose()
             raise _QuitRepl()
 
         if cmd == ":tools":
@@ -226,4 +222,18 @@ class ReplSession:
         self._out(f"session reset (id: {session.session_id} retained)")
 
     def _do_preset(self, name: str) -> None:
-        self._out(f":preset not yet implemented: {name}")
+        if self.runtime is not None:
+            dispose_runtime(self.runtime)
+            self.runtime = None
+        try:
+            self.runtime = create_runtime(
+                preset_name=name,
+                session=self.session,  # type: ignore[arg-type]
+                project_id=self.config.project_id,
+            )
+        except Exception as exc:
+            self._out(f"Error switching preset: {exc}")
+            return
+        self.loop = self._build_loop()
+        tools = self.loop.tools.names() if self.loop else []
+        self._out(f"switched to preset: {name} (tools: {', '.join(tools)})")
