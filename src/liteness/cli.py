@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from liteness.harness import create_runtime, dispose_runtime
+from liteness.harness import create_runtime, dispose_runtime, HarnessRuntime
 from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
 from liteness.providers import default_model, resolve_provider
 from liteness.loop import AgentLoop, LoopConfig
@@ -164,7 +164,7 @@ def _build_loop(
 def run_command(args: argparse.Namespace) -> int:
     session = _resolve_session(args)
     runtime = None
-def _build_runtime(args: argparse.Namespace, session: Session):
+def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime | None:
     if not args.preset:
         return None
     return create_runtime(
