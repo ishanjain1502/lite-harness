@@ -209,7 +209,7 @@ class ReplSession:
             return True
 
         self._out(f"unknown command: {line}")
-        return True
+        return False
 
     def _do_reset(self) -> None:
         self._out(":reset not yet implemented")
