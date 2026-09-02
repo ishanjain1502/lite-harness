@@ -11,7 +11,11 @@ import pytest
 
 from liteness.llm import LlmRequest, ToolSchema
 from liteness.providers import default_model, list_providers, resolve_provider
-from liteness.providers.commandcode import COMMANDCODE_BASE_URL, CommandCodeLLMProvider
+from liteness.providers.commandcode import (
+    COMMANDCODE_BASE_URL,
+    CommandCodeLLMProvider,
+    messages_to_openai_api,
+)
 from liteness.providers.google import (
     GoogleLLMProvider,
     messages_to_gemini_contents,
@@ -34,7 +38,7 @@ def test_resolve_provider_unknown() -> None:
 def test_default_models() -> None:
     assert default_model("openai") == "gpt-4o-mini"
     assert default_model("google") == "gemini-2.0-flash"
-    assert default_model("commandcode") == "gpt-4o-mini"
+    assert default_model("commandcode") == "deepseek/deepseek-v4-flash"
 
 
 def test_resolve_openai_uses_default_model() -> None:
@@ -55,6 +59,57 @@ def test_commandcode_config() -> None:
     assert provider.base_url == COMMANDCODE_BASE_URL
     assert provider.api_key == "cc-test-key"
     assert provider.model == "gpt-4o-mini"
+
+
+def test_commandcode_messages_include_tool_calls_before_tool_results() -> None:
+    messages = [
+        Message(role="user", content="List files"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "call_id": "call_abc",
+                    "name": "read_file",
+                    "arguments": {"path": "."},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            content="not a file: .",
+            tool_call_id="call_abc",
+            name="read_file",
+        ),
+    ]
+    api_messages = messages_to_openai_api(messages)
+    assert api_messages[1]["role"] == "assistant"
+    assert api_messages[1]["tool_calls"][0]["id"] == "call_abc"
+    assert api_messages[1]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert json.loads(api_messages[1]["tool_calls"][0]["function"]["arguments"]) == {
+        "path": "."
+    }
+    assert api_messages[2]["role"] == "tool"
+    assert api_messages[2]["tool_call_id"] == "call_abc"
+
+
+def test_openai_provider_omits_tool_calls_from_assistant_messages() -> None:
+    provider = OpenAILLMProvider(api_key="k")
+    messages = [
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "call_id": "call_abc",
+                    "name": "read_file",
+                    "arguments": {"path": "."},
+                }
+            ],
+        ),
+    ]
+    api_messages = provider._messages_to_api(messages)
+    assert "tool_calls" not in api_messages[0]
 
 
 def test_google_missing_sdk_raises_on_client() -> None:
@@ -185,6 +240,50 @@ def test_openai_http_429_raises_retryable_llm_error() -> None:
     assert exc_info.value.retryable is True
 
 
+def test_commandcode_stream_includes_tool_calls_in_request_body() -> None:
+    lines = [
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+        "data: [DONE]",
+    ]
+    fake_response = _FakeStreamResponse(lines)
+    fake_client = MagicMock()
+    fake_client.stream.return_value = fake_response
+
+    provider = CommandCodeLLMProvider(api_key="cc-key")
+    request = LlmRequest(
+        session_id="s1",
+        turn=1,
+        step=2,
+        messages=[
+            Message(role="user", content="List files"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    {
+                        "call_id": "call_abc",
+                        "name": "read_file",
+                        "arguments": {"path": "."},
+                    }
+                ],
+            ),
+            Message(
+                role="tool",
+                content="not a file: .",
+                tool_call_id="call_abc",
+                name="read_file",
+            ),
+        ],
+        tools=[],
+    )
+
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value = fake_client
+        list(provider.stream(request))
+        body = fake_client.stream.call_args[1]["json"]
+        assert body["messages"][1]["tool_calls"][0]["id"] == "call_abc"
+
+
 def test_commandcode_stream_uses_provider_base_url() -> None:
     lines = [
         'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
@@ -269,6 +368,7 @@ def test_google_stream_mock_client() -> None:
                 parameters={"type": "object", "properties": {}},
             )
         ],
+        model="gemini-2.0-flash",
     )
 
     chunks = list(provider.stream(request))

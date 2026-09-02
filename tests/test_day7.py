@@ -31,6 +31,11 @@ def test_load_builtin_presets() -> None:
 def test_plugin_install_registers_tools() -> None:
     registry = registry_with_plugins("filesystem", "terminal")
     assert "read_file" in registry.names()
+    assert "read_directory" in registry.names()
+    assert "create_file" in registry.names()
+    assert "edit_file" in registry.names()
+    assert "delete_file" in registry.names()
+    assert "delete_directory" in registry.names()
     assert "run_command" in registry.names()
 
 

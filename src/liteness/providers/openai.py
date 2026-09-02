@@ -7,6 +7,7 @@ import os
 from typing import Any, Iterator
 
 from liteness.llm import LLMProvider, LlmChunk, LlmRequest, LlmUsage
+from liteness.session import Message
 from liteness.types import LlmError
 
 
@@ -44,6 +45,9 @@ class OpenAILLMProvider(LLMProvider):
     def last_usage(self) -> LlmUsage | None:
         return self._last_usage
 
+    def _messages_to_api(self, messages: list[Message]) -> list[dict[str, Any]]:
+        return [m.to_dict() for m in messages]
+
     def stream(self, request: LlmRequest) -> Iterator[LlmChunk]:
         try:
             import httpx
@@ -57,7 +61,7 @@ class OpenAILLMProvider(LLMProvider):
 
         body: dict[str, Any] = {
             "model": request.model or self.model,
-            "messages": [m.to_dict() for m in request.messages],
+            "messages": self._messages_to_api(request.messages),
             "stream": True,
         }
         if request.tools:

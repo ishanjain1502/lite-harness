@@ -10,7 +10,7 @@ from liteness.providers.openai import OpenAILLMProvider
 _DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
     "google": "gemini-2.0-flash",
-    "commandcode": "gpt-4o-mini",
+    "commandcode": "deepseek/deepseek-v4-flash",
 }
 
 _PROVIDERS: dict[str, type[LLMProvider]] = {

@@ -59,6 +59,7 @@ class Message:
     content: str
     tool_call_id: str | None = None
     name: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"role": self.role, "content": self.content}
@@ -217,8 +218,14 @@ class Session:
             if event.type == "user/message":
                 messages.append(Message(role="user", content=event.payload["content"]))
             elif event.type == "assistant/message":
+                payload = event.payload
+                tool_calls = payload.get("tool_calls") or None
                 messages.append(
-                    Message(role="assistant", content=event.payload["content"])
+                    Message(
+                        role="assistant",
+                        content=payload.get("content", ""),
+                        tool_calls=tool_calls,
+                    )
                 )
             elif event.type == "tool/result":
                 messages.append(
