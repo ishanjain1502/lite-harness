@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import signal
+import sys
 from dataclasses import dataclass
 from typing import Callable
 
@@ -29,6 +30,20 @@ class ReplConfig:
 
 
 _QUIT_COMMANDS = {":q", ":quit", ":exit"}
+
+
+def _make_stream_writer(output_fn: Callable[[str], None]) -> Callable[[str], None]:
+    """Write streaming chunks inline; default print() would add a newline per call."""
+    if output_fn is print:
+
+        def _write(text: str) -> None:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+        return _write
+    return output_fn
+
+
 def _format_size(content: str) -> str:
     size = len(content.encode("utf-8"))
     if size >= 1024:
@@ -48,6 +63,7 @@ class ReplSession:
         self.config = config
         self._input = input_fn
         self._out = output_fn
+        self._stream = _make_stream_writer(output_fn)
         self.session: Session | None = None
         self.runtime: HarnessRuntime | None = None
         self.loop: AgentLoop | None = None
@@ -182,7 +198,7 @@ class ReplSession:
         if event.type == "assistant/chunk":
             delta = event.payload.get("content_delta") or ""
             if delta:
-                self._out(delta)
+                self._stream(delta)
                 streamed.append(delta)
             for d in event.payload.get("tool_call_deltas") or []:
                 name = d.get("name")

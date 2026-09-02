@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from pathlib import Path
 
@@ -98,6 +99,29 @@ def _wire_mock(repl: ReplSession, llm: MockLLMProvider) -> None:
     repl.session = Session()
     repl.runtime = None
     repl.loop = AgentLoop(llm=llm, tools=registry_with_plugins())
+
+
+def test_repl_stream_writes_inline_without_extra_newlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming deltas must not add a newline per chunk (unlike print)."""
+    stdout_writes: list[str] = []
+    monkeypatch.setattr("sys.stdout.write", lambda s: stdout_writes.append(s))
+    monkeypatch.setattr("sys.stdout.flush", lambda: None)
+
+    writer = repl_module._make_stream_writer(print)
+    writer("Hel")
+    writer("lo")
+
+    assert stdout_writes == ["Hel", "lo"]
+
+    streamed: list[str] = []
+    repl = ReplSession(_config(), output_fn=print)
+    event = type("E", (), {"type": "assistant/chunk", "payload": {"content_delta": "x"}})()
+    repl._on_event(event, streamed)
+
+    assert stdout_writes[-1] == "x"
+    assert streamed == ["x"]
 
 
 def test_repl_runs_turn_and_streams(tmp_path: Path) -> None:
