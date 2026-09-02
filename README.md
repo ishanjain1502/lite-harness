@@ -42,6 +42,11 @@ In the REPL:
 
 Ctrl+C cancels the in-flight turn and returns to the prompt.
 
+> **Streaming note:** assistant chunks are emitted after each turn's LLM stream
+> completes (buffered), not token-by-token as the stream progresses. Live
+> token streaming is tracked as a follow-up — it requires emitting
+> `assistant/chunk` events during iteration inside the agent loop.
+
 ## Run (OpenAI-compatible API)
 
 ```bash
