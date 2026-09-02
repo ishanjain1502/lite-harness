@@ -15,6 +15,33 @@ pip install -e ".[dev]"
 liteness run "Read README.md and tell me what this repository does."
 ```
 
+## REPL (interactive)
+
+Keep one live session across prompts, with streaming output and control commands:
+
+```bash
+# mock provider, no API key
+liteness repl --provider mock --readme README.md
+
+# live provider with a preset
+liteness repl --preset coder --provider openai --model gpt-4o-mini
+
+# durable session (resumable by pointing at the same file)
+liteness repl --preset researcher --provider google --session-file ./sessions/repl.jsonl
+```
+
+In the REPL:
+
+- type a prompt and press Enter to run a turn
+- `:tools` — list installed tools
+- `:history` — print session events so far
+- `:report` — print telemetry trace for the current session
+- `:reset` — clear the current session in place
+- `:preset <name>` — switch preset in place (same session)
+- `:q` / Ctrl+D — quit
+
+Ctrl+C cancels the in-flight turn and returns to the prompt.
+
 ## Run (OpenAI-compatible API)
 
 ```bash
