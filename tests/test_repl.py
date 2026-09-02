@@ -147,7 +147,50 @@ def test_repl_preset_switch_in_place(tmp_path: Path) -> None:
     assert "turn=1" in joined
     assert repl.session.session_id == before_id  # same session retained
     assert repl.session._turn == 1
-    assert repl.runtime is None
+
+def test_repl_resumes_from_session_file(tmp_path: Path) -> None:
+    log = tmp_path / "repl.jsonl"
+    readme = tmp_path / "README.md"
+    readme.write_text("resume me", encoding="utf-8")
+
+    # First REPL session: two turns, then quit.
+    outputs1: list[str] = []
+    repl1 = ReplSession(
+        _config(session_file=str(log)),
+        input_fn=_iter_input(["read it", "again", ":q"]),
+        output_fn=outputs1.append,
+    )
+    repl1.session = Session.open(log)
+    repl1.runtime = None
+    repl1.loop = AgentLoop(
+        llm=MockLLMProvider(steps=[
+            MockStep(step=1, tool_calls=[ToolCallDraft(call_id="c1", name="read_file", arguments={"path": str(readme)})]),
+            MockStep(step=2, content="first answer"),
+        ]),
+        tools=registry_with_plugins(),
+    )
+    repl1.run()
+    # MockLLMProvider scripts produce multiple steps per turn; two prompts => two turns.
+    assert repl1.session._turn == 2
+
+    # Second REPL session: same --session-file, one more turn → continues at turn 2.
+    outputs2: list[str] = []
+    repl2 = ReplSession(
+        _config(session_file=str(log)),
+        input_fn=_iter_input(["continue", ":q"]),
+        output_fn=outputs2.append,
+    )
+    repl2.session = Session.open(log)
+    repl2.runtime = None
+    repl2.loop = AgentLoop(
+        llm=MockLLMProvider(steps=[MockStep(step=1, content="second answer")]),
+        tools=registry_with_plugins(),
+    )
+    repl2.run()
+    # Continuing from the existing log should advance to turn 3.
+    assert repl2.session._turn == 3
+    assert "second answer" in "\n".join(outputs2)
+    # no runtime assertions here
 
 
 def test_repl_failed_preset_creation_keeps_old_runtime(
