@@ -12,6 +12,9 @@ class StopReason(str, Enum):
     STEP_LIMIT = "step_limit"
     TURN_LIMIT = "turn_limit"
     CONTEXT_LIMIT = "context_limit"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    TIMEOUT = "timeout"
+    RETRY_EXHAUSTED = "retry_exhausted"
     LLM_ERROR = "llm_error"
     AGENT_ERROR = "agent_error"
     POLICY_DENIED = "policy_denied"
@@ -22,7 +25,7 @@ def stop_reason_to_status(
 ) -> Literal["completed", "stopped", "error"]:
     if reason == StopReason.COMPLETED:
         return "completed"
-    if reason in (StopReason.LLM_ERROR, StopReason.AGENT_ERROR):
+    if reason in (StopReason.LLM_ERROR, StopReason.AGENT_ERROR, StopReason.RETRY_EXHAUSTED):
         return "error"
     return "stopped"
 

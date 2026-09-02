@@ -26,7 +26,16 @@ liteness run "Read README.md and tell me what this repository does." --provider 
 
 ## Architecture
 
-See `discussionDocs/` for design notes (`init.md` through `day_07.md`).
+See `discussionDocs/` for design notes (`init.md` through `day_08.md`).
+
+Day 8 adds observability (traces, metrics, CLI report) and control-plane policies (budget, retry):
+
+```
+AgentLoop (control)          TelemetryPlugin (observe)
+├── BudgetManager            ├── TraceStore
+├── RetryPolicy              ├── MetricsStore
+└── CancelToken              └── CLI report
+```
 
 Day 7 adds plugin composition, presets, memory, and RAG:
 
@@ -67,4 +76,14 @@ liteness recover ./sessions/demo.jsonl
 
 # Replay recorded LLM outputs from the log (no live model)
 liteness run "continue" --session-file ./sessions/demo.jsonl --replay
+```
+
+### Observability (Day 8)
+
+```bash
+# Print trace tree + metrics after a run
+liteness run "Read README.md and summarize." --session-file ./sessions/demo.jsonl --report
+
+# Build report from an existing session log
+liteness report ./sessions/demo.jsonl
 ```

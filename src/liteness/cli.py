@@ -12,8 +12,10 @@ from liteness.loop import AgentLoop, LoopConfig
 from liteness.plugins import get_plugin
 from liteness.plugins.base import PluginConfigError
 from liteness.plugins.rag import RAGPlugin
+from liteness.plugins.telemetry import TelemetryPlugin
 from liteness.replay import ReplayLLMProvider
 from liteness.session import Session, find_orphan_tool_calls, recover_orphans
+from liteness.telemetry.projector import format_trace_report, project_events
 
 
 def _format_size(content: str) -> str:
@@ -106,11 +108,22 @@ def _build_loop(
     session: Session,
     runtime=None,
 ) -> AgentLoop:
+    telemetry_plugin: TelemetryPlugin | None = None
     if runtime is not None:
         registry = runtime.ctx.tools
-        event_sink = lambda event_type, payload: runtime.ctx.emit(  # noqa: E731
-            "session/event", event_type, payload
-        )
+        telemetry_plugin = runtime.ctx.services.get("telemetry")
+        if telemetry_plugin is None and getattr(args, "telemetry", False):
+            telemetry_plugin = TelemetryPlugin()
+            telemetry_plugin.install(runtime.ctx, {})
+
+        def event_sink(event) -> None:
+            runtime.ctx.emit(
+                "session/event",
+                event.type,
+                event.payload,
+                session_event=event,
+            )
+
     else:
         from liteness.context import Context
         from liteness.plugins.filesystem import FilesystemPlugin
@@ -118,7 +131,14 @@ def _build_loop(
         ctx = Context()
         FilesystemPlugin().install(ctx, {})
         registry = ctx.tools
-        event_sink = None
+        telemetry_plugin = None
+        if getattr(args, "telemetry", False):
+            telemetry_plugin = TelemetryPlugin()
+            telemetry_plugin.install(ctx, {})
+
+        def event_sink(event) -> None:
+            if telemetry_plugin is not None:
+                telemetry_plugin.projector.process(event)
 
     return AgentLoop(
         llm=_resolve_llm(args, session),
@@ -127,6 +147,7 @@ def _build_loop(
             max_steps_per_turn=args.max_steps,
             allowed_tools=registry.names(),
             model=args.model,
+            budget=getattr(args, "budget_config", None),
         ),
         event_sink=event_sink,
     )
@@ -159,6 +180,18 @@ def run_command(args: argparse.Namespace) -> int:
     if result.final_output:
         print()
         print(result.final_output)
+
+    if getattr(args, "report", False) or getattr(args, "telemetry", False):
+        print()
+        print("--- telemetry ---")
+        if runtime is not None:
+            plugin = runtime.ctx.services.get("telemetry")
+            if plugin is not None:
+                print(plugin.format_report(session.session_id))
+            else:
+                print(format_trace_report(project_events(session.events)))
+        else:
+            print(format_trace_report(project_events(session.events)))
 
     if args.verbose:
         print()
@@ -203,6 +236,40 @@ def recover_command(args: argparse.Namespace) -> int:
 
     recovered = recover_orphans(session)
     print(f"Recovered {len(recovered)} tool/result event(s)")
+    return 0
+
+
+def report_command(args: argparse.Namespace) -> int:
+    session = Session.load_from_jsonl(args.session_file, recover=args.recover)
+    report = project_events(session.events)
+    print(format_trace_report(report))
+    if args.json:
+        import json as json_mod
+
+        trace = report.trace
+        payload = {
+            "trace_id": trace.trace_id,
+            "outcome": trace.outcome,
+            "spans": [
+                {
+                    "span_id": s.span_id,
+                    "parent_span_id": s.parent_span_id,
+                    "kind": s.kind,
+                    "name": s.name,
+                    "duration_ms": s.duration_ms,
+                    "status": s.status,
+                }
+                for s in trace.spans
+            ],
+            "metrics": {
+                "llm_requests": report.metrics.llm_requests,
+                "tool_calls": report.metrics.tool_calls,
+                "llm_p95_ms": report.metrics.llm_p95_ms,
+                "total_tokens": report.metrics.total_tokens,
+                "total_cost_usd": report.metrics.total_cost_usd,
+            },
+        }
+        print(json_mod.dumps(payload, indent=2))
     return 0
 
 
@@ -257,7 +324,31 @@ def main(argv: list[str] | None = None) -> int:
         help="Replay assistant/message from session log instead of live LLM",
     )
     run_parser.add_argument("-v", "--verbose", action="store_true")
+    run_parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Print telemetry trace report after the turn",
+    )
+    run_parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help="Enable live telemetry plugin during the run",
+    )
     run_parser.set_defaults(func=run_command)
+
+    report_parser = sub.add_parser("report", help="Build telemetry report from session JSONL")
+    report_parser.add_argument("session_file", help="JSONL session log path")
+    report_parser.add_argument(
+        "--recover",
+        action="store_true",
+        help="Recover orphan tool/call events before projecting",
+    )
+    report_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Also emit machine-readable JSON summary",
+    )
+    report_parser.set_defaults(func=report_command)
 
     index_parser = sub.add_parser("index", help="Build RAG index from markdown docs")
     index_parser.add_argument("path", help="Markdown file or directory to index")

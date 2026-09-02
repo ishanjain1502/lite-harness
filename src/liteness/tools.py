@@ -46,6 +46,7 @@ class ToolDefinition:
     parameters: dict[str, Any]
     handler: ToolHandler
     timeout_s: float | None = None
+    idempotent: bool = False
 
     def schema(self) -> ToolSchema:
         return ToolSchema(
