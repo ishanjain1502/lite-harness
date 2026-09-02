@@ -113,8 +113,29 @@ def test_repl_runs_turn_and_streams(tmp_path: Path) -> None:
     joined = "\n".join(outputs)
     assert "-> tool: read_file" in joined
     assert "-> result:" in joined
-    assert "done reading" in joined
+    rendered = "".join(outputs)
+    assert "done reading" in rendered
+    assert rendered.count("done reading") == 1
     assert repl.session._turn == 1
+
+
+def test_repl_turn_composes_existing_event_sink() -> None:
+    outputs: list[str] = []
+    recorded_events: list[str] = []
+    repl = ReplSession(_config(), output_fn=outputs.append)
+    repl.session = Session()
+    repl.loop = AgentLoop(
+        llm=MockLLMProvider(steps=[MockStep(step=1, content="recorded answer")]),
+        tools=registry_with_plugins(),
+        event_sink=lambda event: recorded_events.append(event.type),
+    )
+
+    original_sink = repl.loop.event_sink
+    repl._run_turn("record this")
+
+    assert "assistant/chunk" in recorded_events
+    assert "assistant/message" in recorded_events
+    assert repl.loop.event_sink is original_sink
 
 
 def test_repl_blank_lines_are_ignored(tmp_path: Path) -> None:
@@ -189,7 +210,7 @@ def test_repl_resumes_from_session_file(tmp_path: Path) -> None:
     repl2.run()
     # Continuing from the existing log should advance to turn 3.
     assert repl2.session._turn == 3
-    assert "second answer" in "\n".join(outputs2)
+    assert "second answer" in "".join(outputs2)
     # no runtime assertions here
 
 
@@ -272,7 +293,7 @@ def test_repl_continues_after_turn_error() -> None:
     joined = "\n".join(outputs)
     assert code == 0
     assert "error" in joined.lower() or "llm_error" in joined.lower()
-    assert "recovered" in joined
+    assert "recovered" in "".join(outputs)
     assert repl.session._turn == 1
 
 

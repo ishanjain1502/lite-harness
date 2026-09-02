@@ -137,7 +137,17 @@ class ReplSession:
         self._out(f"you> {prompt}")
         streamed: list[str] = []
 
+        loop = self.loop
+        if loop is None:
+            self._out("Error: no loop configured")
+            self._current_cancel = None
+            return
+
+        prev_sink = loop.event_sink
+
         def event_sink(event) -> None:
+            if prev_sink is not None:
+                prev_sink(event)
             self._on_event(event, streamed)
 
         prev_sigint = signal.getsignal(signal.SIGINT)
@@ -145,13 +155,6 @@ class ReplSession:
         def _on_sigint(*_args) -> None:
             cancel.cancel()
 
-        loop = self.loop
-        prev_sink = None
-        if loop is None:
-            self._out("Error: no loop configured")
-            self._current_cancel = None
-            return
-        prev_sink = loop.event_sink
         try:
             signal.signal(signal.SIGINT, _on_sigint)
             loop.event_sink = event_sink
@@ -185,11 +188,6 @@ class ReplSession:
                 name = d.get("name")
                 if name:
                     self._out(f"\n-> tool: {name}")
-        elif event.type == "assistant/message":
-            content = event.payload.get("content", "")
-            if content:
-                self._out(content)
-                streamed.append(content)
         elif event.type == "tool/result":
             content = event.payload.get("content", "")
             if event.payload.get("is_error"):

@@ -45,3 +45,14 @@ def test_repl_subcommand_is_registered(capsys) -> None:
     assert "repl" in captured.out
     assert "Interactive REPL" in captured.out
 
+
+def test_run_subcommand_returns_status_and_prints_summary(capsys) -> None:
+    from liteness.cli import main
+
+    rc = main(["run", "--readme", "README.md", "summarize the project"])
+
+    captured = capsys.readouterr()
+    assert isinstance(rc, int)
+    assert rc in (0, 1)
+    assert "Turn 1" in captured.out
+

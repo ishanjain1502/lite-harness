@@ -165,30 +165,6 @@ def _build_loop(
 def run_command(args: argparse.Namespace) -> int:
     session = _resolve_session(args)
     runtime = None
-    # run_command handles a single-turn prompt; repl_command starts an interactive REPL session
-
-def repl_command(args: argparse.Namespace) -> int:
-    config = ReplConfig(
-        preset=args.preset,
-        provider=args.provider,
-        model=args.model,
-        project_id=args.project_id,
-        max_steps=args.max_steps,
-        session_file=args.session_file,
-        readme=args.readme,
-        telemetry=args.telemetry,
-        verbose=args.verbose,
-    )
-    return ReplSession(config).run()
-def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime | None:
-    if not args.preset:
-        return None
-    return create_runtime(
-        preset_name=args.preset,
-        session=session,
-        project_id=args.project_id,
-    )
-
 
     if args.preset:
         try:
@@ -229,6 +205,31 @@ def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime
             print(f"  [{event.type}] turn={event.turn} step={event.step}")
 
     return 0 if result.status == "completed" else 1
+
+
+def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime | None:
+    if not args.preset:
+        return None
+    return create_runtime(
+        preset_name=args.preset,
+        session=session,
+        project_id=args.project_id,
+    )
+
+
+def repl_command(args: argparse.Namespace) -> int:
+    config = ReplConfig(
+        preset=args.preset,
+        provider=args.provider,
+        model=args.model,
+        project_id=args.project_id,
+        max_steps=args.max_steps,
+        session_file=args.session_file,
+        readme=args.readme,
+        telemetry=args.telemetry,
+        verbose=args.verbose,
+    )
+    return ReplSession(config).run()
 
 
 def index_command(args: argparse.Namespace) -> int:
