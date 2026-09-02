@@ -212,7 +212,18 @@ class ReplSession:
         return False
 
     def _do_reset(self) -> None:
-        self._out(":reset not yet implemented")
+        session = self.session  # type: ignore[assignment]
+        session.events.clear()
+        session._turn = 0
+        session._step = 0
+        if session.log_path is not None:
+            session.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with session.log_path.open("w", encoding="utf-8") as handle:
+                handle.truncate(0)
+                handle.flush()
+                import os
+                os.fsync(handle.fileno())
+        self._out(f"session reset (id: {session.session_id} retained)")
 
     def _do_preset(self, name: str) -> None:
         self._out(f":preset not yet implemented: {name}")

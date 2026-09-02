@@ -71,3 +71,29 @@ def test_repl_unknown_command(tmp_path: Path) -> None:
     assert any("unknown command: :bogus" in o for o in outputs)
     assert repl.session._turn == 0  # :bogus did not run a turn
 
+
+def test_repl_reset_clears_in_memory_session(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(_config(), input_fn=_iter_input(["hi", ":reset", ":q"]), output_fn=outputs.append)
+    _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="answer")]))
+    repl.run()
+    assert repl.session._turn == 0
+    assert repl.session.events == []
+    assert "session reset" in "\n".join(outputs)
+
+
+def test_repl_reset_truncates_log_file(tmp_path: Path) -> None:
+    log = tmp_path / "repl.jsonl"
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(session_file=str(log)),
+        input_fn=_iter_input(["hi", ":reset", ":q"]),
+        output_fn=outputs.append,
+    )
+    _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="answer")]))
+    repl.run()
+    assert log.exists()
+    assert log.stat().st_size == 0
+    # same session id retained
+    assert repl.session.session_id
+
