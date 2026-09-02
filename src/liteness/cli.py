@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 from liteness.harness import create_runtime, dispose_runtime
-from liteness.llm import MockLLMProvider, MockStep, OpenAILLMProvider, ToolCallDraft
+from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
+from liteness.providers import default_model, resolve_provider
 from liteness.loop import AgentLoop, LoopConfig
 from liteness.plugins import get_plugin
 from liteness.plugins.base import PluginConfigError
@@ -98,9 +99,9 @@ def _resolve_session(args: argparse.Namespace) -> Session:
 def _resolve_llm(args: argparse.Namespace, session: Session):
     if args.replay:
         return ReplayLLMProvider.from_session(session)
-    if args.provider == "openai":
-        return OpenAILLMProvider(model=args.model)
-    return _mock_for_readme_task(args.readme)
+    if args.provider == "mock":
+        return _mock_for_readme_task(args.readme)
+    return resolve_provider(args.provider, model=args.model)
 
 
 def _build_loop(
@@ -140,13 +141,17 @@ def _build_loop(
             if telemetry_plugin is not None:
                 telemetry_plugin.projector.process(event)
 
+    model = args.model
+    if model is None:
+        model = "mock" if args.provider == "mock" else default_model(args.provider)
+
     return AgentLoop(
         llm=_resolve_llm(args, session),
         tools=registry,
         config=LoopConfig(
             max_steps_per_turn=args.max_steps,
             allowed_tools=registry.names(),
-            model=args.model,
+            model=model,
             budget=getattr(args, "budget_config", None),
         ),
         event_sink=event_sink,
@@ -297,11 +302,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_parser.add_argument(
         "--provider",
-        choices=["mock", "openai"],
+        choices=["mock", "openai", "google", "commandcode"],
         default="mock",
         help="LLM provider (default: mock)",
     )
-    run_parser.add_argument("--model", default="gpt-4o-mini", help="Model id")
+    run_parser.add_argument(
+        "--model",
+        default=None,
+        help="Model id (provider default if omitted)",
+    )
     run_parser.add_argument(
         "--readme",
         default="README.md",

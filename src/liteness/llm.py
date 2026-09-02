@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -52,6 +51,13 @@ class LlmChunk:
     content_delta: str = ""
     tool_call_deltas: list[dict[str, Any]] = field(default_factory=list)
     done: bool = False
+
+
+@dataclass
+class LlmUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
 
 
 @dataclass
@@ -167,80 +173,22 @@ class MockLLMProvider(LLMProvider):
             yield chunk
 
 
-class OpenAILLMProvider(LLMProvider):
-    """OpenAI-compatible chat completions with streaming."""
+# Backward-compatible re-exports (tests and CLI import from liteness.llm).
+from liteness.providers.commandcode import CommandCodeLLMProvider  # noqa: E402
+from liteness.providers.google import GoogleLLMProvider  # noqa: E402
+from liteness.providers.openai import OpenAILLMProvider  # noqa: E402
 
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        model: str = "gpt-4o-mini",
-    ) -> None:
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        self.base_url = (
-            base_url
-            or os.environ.get("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ).rstrip("/")
-        self.model = model
-
-    def stream(self, request: LlmRequest) -> Iterator[LlmChunk]:
-        try:
-            import httpx
-        except ImportError as exc:
-            raise RuntimeError(
-                "OpenAI provider requires httpx: pip install 'lite-ness[openai]'"
-            ) from exc
-
-        if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set")
-
-        body = {
-            "model": request.model or self.model,
-            "messages": [m.to_dict() for m in request.messages],
-            "stream": True,
-        }
-        if request.tools:
-            body["tools"] = [t.to_openai_tool() for t in request.tools]
-
-        with httpx.Client(timeout=120.0) as client:
-            with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=body,
-            ) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:]
-                    if data == "[DONE]":
-                        yield LlmChunk(done=True)
-                        return
-                    payload = json.loads(data)
-                    choice = payload["choices"][0]
-                    delta = choice.get("delta", {})
-                    content = delta.get("content") or ""
-                    tool_deltas: list[dict[str, Any]] = []
-                    if "tool_calls" in delta:
-                        for tc in delta["tool_calls"]:
-                            tool_deltas.append(
-                                {
-                                    "index": tc.get("index", 0),
-                                    "id": tc.get("id"),
-                                    "name": (tc.get("function") or {}).get("name"),
-                                    "arguments": (tc.get("function") or {}).get(
-                                        "arguments", ""
-                                    ),
-                                }
-                            )
-                    yield LlmChunk(
-                        content_delta=content,
-                        tool_call_deltas=tool_deltas,
-                        done=choice.get("finish_reason") is not None,
-                    )
+__all__ = [
+    "CommandCodeLLMProvider",
+    "GoogleLLMProvider",
+    "LLMProvider",
+    "LlmChunk",
+    "LlmRequest",
+    "LlmStreamResult",
+    "LlmUsage",
+    "MockLLMProvider",
+    "MockStep",
+    "OpenAILLMProvider",
+    "ToolCallDraft",
+    "ToolSchema",
+]

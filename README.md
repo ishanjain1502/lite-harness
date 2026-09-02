@@ -24,6 +24,30 @@ export OPENAI_BASE_URL=https://api.openai.com/v1   # optional
 liteness run "Read README.md and tell me what this repository does." --provider openai
 ```
 
+## Run (Google Gemini)
+
+```bash
+pip install -e ".[google]"
+export GOOGLE_API_KEY=...   # or GEMINI_API_KEY
+liteness run "Read README.md and summarize." --provider google --model gemini-2.0-flash
+```
+
+## Run (Command Code Provider API)
+
+Command Code routes Anthropic-shaped models to `/messages`; this harness uses `/chat/completions` only. Pick OpenAI or open-source model IDs from [Command Code's model list](https://docs.commandcode.ai).
+
+```bash
+pip install -e ".[openai]"   # Command Code uses the OpenAI-compatible adapter
+export COMMANDCODE_API_KEY=...
+liteness run "List files in this directory." --provider commandcode --model gpt-4o-mini
+```
+
+Install all providers at once:
+
+```bash
+pip install -e ".[all-providers]"
+```
+
 ## Architecture
 
 See `discussionDocs/` for design notes (`init.md` through `day_08.md`).
