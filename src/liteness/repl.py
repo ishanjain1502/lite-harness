@@ -22,10 +22,8 @@ class ReplConfig:
     readme: str
     telemetry: bool
     verbose: bool
-    # additional CLI-like flags used by _build_loop
-    recover: bool = False
-    replay: bool = False
-    report: bool = False
+    # NOTE: keep ReplConfig matching the task brief exactly.
+    # replay is injected into the argparse.Namespace when building the loop.
 
 
 _QUIT_COMMANDS = {":q", ":quit", ":exit"}
@@ -75,7 +73,7 @@ class ReplSession:
         import argparse
         from liteness.cli import _build_loop as cli_build_loop
 
-        args = argparse.Namespace(**self.config.__dict__)
+        args = argparse.Namespace(replay=False, **self.config.__dict__)
         return cli_build_loop(args, self.session, runtime=self.runtime)
 
     def _print_banner(self) -> None:
