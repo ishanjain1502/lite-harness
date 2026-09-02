@@ -11,6 +11,7 @@ from liteness.loop import AgentLoop
 from liteness.session import Session
 from liteness.harness import create_runtime
 from liteness.testing import registry_with_plugins
+from liteness.types import CancelledError, LlmError
 
 
 def _config(**overrides) -> ReplConfig:
@@ -202,30 +203,24 @@ def test_repl_failed_preset_loop_build_keeps_old_runtime(
     assert disposed == [new_runtime]
     assert "Error switching preset: loop creation failed" in outputs
 
-def test_repl_continues_after_turn_error(tmp_path: Path) -> None:
+def test_repl_continues_after_turn_error() -> None:
     outputs: list[str] = []
     repl = ReplSession(_config(), input_fn=_iter_input(["bad", "good", ":q"]), output_fn=outputs.append)
 
-    class _BoomLLM(MockLLMProvider):
-        def stream(self, request):
-            from liteness.types import LlmError
-            raise LlmError("LLM_ERROR", "boom", retryable=False)
-
-    # First call raises; second call uses a normal mock. Swap the LLM after the first turn.
-    bad = _BoomLLM(steps=[])
-    good = MockLLMProvider(steps=[MockStep(step=1, content="recovered")])
     repl.session = Session()
     repl.runtime = None
-    repl.loop = AgentLoop(llm=bad, tools=registry_with_plugins())
+    repl.loop = AgentLoop(
+        llm=MockLLMProvider(steps=[MockStep(step=1, content="recovered")]),
+        tools=registry_with_plugins(),
+    )
 
-    # Patch loop.llm after first turn by wrapping run_turn.
     original_run_turn = repl.loop.run_turn
     calls = {"n": 0}
 
     def _run_turn(session, prompt, cancel=None):
         calls["n"] += 1
-        if calls["n"] == 2:
-            repl.loop.llm = good  # type: ignore[attr-defined]
+        if calls["n"] == 1:
+            raise LlmError("LLM_ERROR", "boom", retryable=False)
         return original_run_turn(session, prompt, cancel=cancel)
 
     repl.loop.run_turn = _run_turn  # type: ignore[assignment]
@@ -234,5 +229,27 @@ def test_repl_continues_after_turn_error(tmp_path: Path) -> None:
     assert code == 0
     assert "error" in joined.lower() or "llm_error" in joined.lower()
     assert "recovered" in joined
-    assert repl.session._turn == 2
+    assert repl.session._turn == 1
+
+
+def test_repl_reraises_cancelled_error() -> None:
+    outputs: list[str] = []
+    repl = ReplSession(_config(), output_fn=outputs.append)
+    repl.session = Session()
+    repl.loop = AgentLoop(
+        llm=MockLLMProvider(steps=[]),
+        tools=registry_with_plugins(),
+    )
+    original_sink = repl.loop.event_sink
+
+    def _cancelled_turn(session, prompt, cancel=None):
+        raise CancelledError()
+
+    repl.loop.run_turn = _cancelled_turn  # type: ignore[assignment]
+
+    with pytest.raises(CancelledError):
+        repl._run_turn("cancel me")
+
+    assert repl.loop.event_sink is original_sink
+    assert not any("unexpected error" in output for output in outputs)
 

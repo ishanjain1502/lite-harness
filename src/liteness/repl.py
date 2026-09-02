@@ -9,6 +9,7 @@ from liteness.harness import HarnessRuntime, create_runtime, dispose_runtime
 from liteness.loop import AgentLoop
 from liteness.providers import default_model
 from liteness.session import Session
+from liteness.types import CancelToken, CancelledError
 
 
 @dataclass
@@ -122,8 +123,6 @@ class ReplSession:
             self._run_turn(stripped)
 
     def _run_turn(self, prompt: str) -> None:
-        from liteness.types import CancelToken
-
         cancel = CancelToken()
         self._out(f"you> {prompt}")
         streamed: list[str] = []
@@ -141,6 +140,8 @@ class ReplSession:
             loop.event_sink = event_sink
             try:
                 result = loop.run_turn(self.session, prompt, cancel=cancel)  # type: ignore[arg-type]
+            except CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001 — keep the REPL alive
                 if streamed:
                     self._out("")
