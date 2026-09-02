@@ -63,7 +63,14 @@ class ReplSession:
                 self._out(f"Error: {exc}")
                 return 1
         if self.loop is None:
-            self.loop = self._build_loop()
+            try:
+                self.loop = self._build_loop()
+            except Exception as exc:
+                self._out(f"Error: {exc}")
+                if self.runtime is not None:
+                    dispose_runtime(self.runtime)
+                    self.runtime = None
+                return 1
         self._print_banner()
         return self._read_loop()
 

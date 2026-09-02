@@ -332,3 +332,25 @@ def test_repl_cancel_mid_turn_returns_to_prompt(tmp_path: Path) -> None:
     # REPL returned to the prompt and processed :q
     assert repl.session._turn == 1
 
+
+def test_repl_fatal_unknown_preset(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(preset="nope"),
+        input_fn=_iter_input([]),
+        output_fn=outputs.append,
+    )
+    assert repl.run() == 1
+    assert "Error" in "\n".join(outputs)
+
+
+def test_repl_fatal_unknown_provider(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(provider="bogus"),
+        input_fn=_iter_input([]),
+        output_fn=outputs.append,
+    )
+    assert repl.run() == 1
+    assert "Error" in "\n".join(outputs)
+
