@@ -139,7 +139,13 @@ class ReplSession:
         prev_sink = loop.event_sink
         try:
             loop.event_sink = event_sink
-            result = loop.run_turn(self.session, prompt, cancel=cancel)  # type: ignore[arg-type]
+            try:
+                result = loop.run_turn(self.session, prompt, cancel=cancel)  # type: ignore[arg-type]
+            except Exception as exc:  # noqa: BLE001 — keep the REPL alive
+                if streamed:
+                    self._out("")
+                self._out(f"[unexpected error: {exc}]")
+                return
         finally:
             loop.event_sink = prev_sink
 
