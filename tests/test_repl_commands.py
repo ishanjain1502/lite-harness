@@ -91,6 +91,7 @@ def test_repl_reset_truncates_log_file(tmp_path: Path) -> None:
         output_fn=outputs.append,
     )
     _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="answer")]))
+    repl.session = Session.open(log)
     repl.run()
     assert log.exists()
     assert log.stat().st_size == 0

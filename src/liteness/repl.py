@@ -53,11 +53,12 @@ class ReplSession:
     def run(self) -> int:
         if self.session is None:
             self.session = self._open_session()
-        try:
-            self.runtime = self._build_runtime()
-        except Exception as exc:
-            self._out(f"Error: {exc}")
-            return 1
+        if self.runtime is None:
+            try:
+                self.runtime = self._build_runtime()
+            except Exception as exc:
+                self._out(f"Error: {exc}")
+                return 1
         if self.loop is None:
             self.loop = self._build_loop()
         self._print_banner()
@@ -77,12 +78,16 @@ class ReplSession:
             project_id=self.config.project_id,
         )
 
-    def _build_loop(self) -> AgentLoop:
+    def _build_loop(self, *, runtime: HarnessRuntime | None = None) -> AgentLoop:
         import argparse
         from liteness.cli import _build_loop as cli_build_loop
 
         args = argparse.Namespace(replay=False, **self.config.__dict__)
-        return cli_build_loop(args, self.session, runtime=self.runtime)
+        return cli_build_loop(
+            args,
+            self.session,
+            runtime=self.runtime if runtime is None else runtime,
+        )
 
     def _print_banner(self) -> None:
         model = self.config.model or default_model(self.config.provider)
@@ -111,6 +116,7 @@ class ReplSession:
                 try:
                     self._handle_command(stripped)
                 except _QuitRepl:
+                    self._dispose()
                     return 0
                 continue
             self._run_turn(stripped)
@@ -222,18 +228,23 @@ class ReplSession:
         self._out(f"session reset (id: {session.session_id} retained)")
 
     def _do_preset(self, name: str) -> None:
-        if self.runtime is not None:
-            dispose_runtime(self.runtime)
-            self.runtime = None
+        old_runtime = self.runtime
+        new_runtime = None
         try:
-            self.runtime = create_runtime(
+            new_runtime = create_runtime(
                 preset_name=name,
                 session=self.session,  # type: ignore[arg-type]
                 project_id=self.config.project_id,
             )
+            new_loop = self._build_loop(runtime=new_runtime)
         except Exception as exc:
+            if new_runtime is not None:
+                dispose_runtime(new_runtime)
             self._out(f"Error switching preset: {exc}")
             return
-        self.loop = self._build_loop()
+        self.runtime = new_runtime
+        self.loop = new_loop
+        if old_runtime is not None:
+            dispose_runtime(old_runtime)
         tools = self.loop.tools.names() if self.loop else []
         self._out(f"switched to preset: {name} (tools: {', '.join(tools)})")
