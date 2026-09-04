@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import shlex
 import signal
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from liteness.harness import HarnessRuntime, create_runtime, dispose_runtime
@@ -12,6 +14,8 @@ from liteness.loop import AgentLoop
 from liteness.providers import default_model
 from liteness.session import Session
 from liteness.types import CancelToken, CancelledError
+from liteness.eval.errors import EvalCaseError
+from liteness.eval.models import EvalCase, EvalSuite
 
 
 @dataclass
@@ -25,6 +29,7 @@ class ReplConfig:
     readme: str
     telemetry: bool
     verbose: bool
+    eval_file: str | None = None
     # NOTE: keep ReplConfig matching the task brief exactly.
     # replay is injected into the argparse.Namespace when building the loop.
 
@@ -123,7 +128,7 @@ class ReplSession:
         self._out(f"  provider: {self.config.provider} / {model}")
         self._out(f"  tools:     {', '.join(tools) if tools else '(none)'}")
         self._out(f"  session:   {self.session.session_id}")  # type: ignore[union-attr]
-        self._out("  commands:  :q :tools :history :reset :preset <name> :report")
+        self._out("  commands:  :q :tools :history :reset :preset <name> :report eval")
 
     def _read_loop(self) -> int:
         while True:
@@ -138,7 +143,7 @@ class ReplSession:
             stripped = line.strip()
             if not stripped:
                 continue
-            if stripped.startswith(":"):
+            if stripped.startswith(":") or stripped == "eval" or stripped.startswith("eval "):
                 try:
                     self._handle_command(stripped)
                 except _QuitRepl:
@@ -216,6 +221,10 @@ class ReplSession:
             dispose_runtime(self.runtime)
             self.runtime = None
     def _handle_command(self, line: str) -> bool:
+        if line == "eval" or line.startswith("eval "):
+            self._do_eval(line)
+            return True
+
         parts = line.split(maxsplit=1)
         cmd = parts[0]
         arg = parts[1].strip() if len(parts) > 1 else None
@@ -250,8 +259,71 @@ class ReplSession:
             self._do_preset(arg)
             return True
 
+        if cmd == ":eval":
+            self._do_eval("eval" if not arg else f"eval {arg}")
+            return True
+
         self._out(f"unknown command: {line}")
         return False
+
+    def _do_eval(self, line: str) -> None:
+        from liteness.eval.dataset import load_suite
+        from liteness.eval.errors import EvalError
+        from liteness.eval.report import build_eval_report, format_eval_report
+        from liteness.eval.runner import EvalRunner
+
+        try:
+            tokens = shlex.split(line)
+        except ValueError as exc:
+            self._out(f"eval error: {exc}")
+            return
+
+        case_id: str | None = None
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--case":
+                if index + 1 >= len(tokens):
+                    self._out("usage: eval [--case <id>]")
+                    return
+                case_id = tokens[index + 1]
+                index += 2
+                continue
+            self._out("usage: eval [--case <id>]")
+            return
+
+        session = self.session
+        if session is None or not session.events:
+            self._out("no session events to evaluate")
+            return
+
+        try:
+            if self.config.eval_file:
+                suite = load_suite(self.config.eval_file)
+                case = _resolve_repl_eval_case(suite, case_id)
+            else:
+                if case_id is not None:
+                    self._out("eval --case requires --eval-file on repl startup")
+                    return
+                case = EvalCase(id="repl-session")
+                suite = EvalSuite(
+                    name="repl",
+                    cases=[case],
+                    evaluators=["stop_reason", "tool_lifecycle", "event_integrity"],
+                )
+
+            case_result = EvalRunner().evaluate_session(
+                suite,
+                case,
+                session,
+                session_path=session.log_path,
+            )
+            report = build_eval_report(suite, [case_result], dataset=suite.name)
+        except EvalError as exc:
+            self._out(f"eval error: {exc}")
+            return
+
+        self._out(format_eval_report(report, verbose=self.config.verbose).rstrip())
 
     def _do_reset(self) -> None:
         session = self.session  # type: ignore[assignment]
@@ -288,3 +360,14 @@ class ReplSession:
             dispose_runtime(old_runtime)
         tools = self.loop.tools.names() if self.loop else []
         self._out(f"switched to preset: {name} (tools: {', '.join(tools)})")
+
+
+def _resolve_repl_eval_case(suite: EvalSuite, case_id: str | None) -> EvalCase:
+    if case_id is not None:
+        matches = [case for case in suite.cases if case.id == case_id]
+        if not matches:
+            raise EvalCaseError(f"case not found in suite: {case_id}")
+        return matches[0]
+    if len(suite.cases) == 1:
+        return suite.cases[0]
+    raise EvalCaseError("eval --case <id> required when suite has multiple cases")

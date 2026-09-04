@@ -18,5 +18,6 @@ venv/
 # Env
 .env
 sessions/
+.sessions/
 video-output/
 docs/

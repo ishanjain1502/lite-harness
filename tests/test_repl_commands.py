@@ -12,7 +12,7 @@ def _config(**overrides) -> ReplConfig:
     base = dict(
         preset=None, provider="mock", model=None, project_id="default",
         max_steps=10, session_file=None, readme="README.md",
-        telemetry=False, verbose=False,
+        telemetry=False, verbose=False, eval_file=None,
     )
     base.update(overrides)
     return ReplConfig(**base)
@@ -97,4 +97,70 @@ def test_repl_reset_truncates_log_file(tmp_path: Path) -> None:
     assert log.stat().st_size == 0
     # same session id retained
     assert repl.session.session_id
+
+
+def test_repl_eval_command_after_turn(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(),
+        input_fn=_iter_input(["hi", "eval", ":q"]),
+        output_fn=outputs.append,
+    )
+    _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="answer")]))
+    repl.run()
+    joined = "\n".join(outputs)
+    assert "Eval Report: repl" in joined
+    assert "event_integrity" in joined
+
+
+def test_repl_eval_with_suite_case(tmp_path: Path) -> None:
+    suite_path = tmp_path / "suite.yaml"
+    suite_path.write_text(
+        """
+name: repl-suite
+evaluators:
+  - stop_reason
+cases:
+  - id: turn-001
+    expected:
+      stop_reason: completed
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(eval_file=str(suite_path)),
+        input_fn=_iter_input(["hi", "eval --case turn-001", ":q"]),
+        output_fn=outputs.append,
+    )
+    _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="answer")]))
+    repl.run()
+    joined = "\n".join(outputs)
+    assert "Eval Report: repl-suite" in joined
+    assert "Passed:" in joined
+
+
+def test_repl_eval_case_requires_eval_file(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(),
+        input_fn=_iter_input(["hi", "eval --case turn-001", ":q"]),
+        output_fn=outputs.append,
+    )
+    _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="answer")]))
+    repl.run()
+    assert any("eval --case requires --eval-file" in o for o in outputs)
+
+
+def test_repl_colon_eval_alias(tmp_path: Path) -> None:
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(),
+        input_fn=_iter_input(["hi", ":eval", ":q"]),
+        output_fn=outputs.append,
+    )
+    _wire_mock(repl, MockLLMProvider(steps=[MockStep(step=1, content="answer")]))
+    repl.run()
+    assert any("Eval Report:" in o for o in outputs)
 
