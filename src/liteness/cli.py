@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from liteness.harness import create_runtime, dispose_runtime, HarnessRuntime
 from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
@@ -102,6 +104,38 @@ def _resolve_session(args: argparse.Namespace) -> Session:
     return Session()
 
 
+def _add_clickhouse_flags(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--clickhouse",
+        action="store_true",
+        help="Export events to ClickHouse (redacted)",
+    )
+    group.add_argument(
+        "--clickhouse-full",
+        action="store_true",
+        help="Export events to ClickHouse with raw payloads",
+    )
+    parser.add_argument("--clickhouse-url", default=None, help="ClickHouse HTTP URL")
+    parser.add_argument("--clickhouse-database", default="liteness")
+
+
+def _clickhouse_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    if not getattr(args, "clickhouse", False) and not getattr(args, "clickhouse_full", False):
+        return None
+    mode = "full" if getattr(args, "clickhouse_full", False) else "redacted"
+    url = (
+        getattr(args, "clickhouse_url", None)
+        or os.environ.get("LITENESS_CLICKHOUSE_URL")
+        or "http://localhost:8123"
+    )
+    return {
+        "url": url,
+        "database": getattr(args, "clickhouse_database", "liteness") or "liteness",
+        "mode": mode,
+    }
+
+
 def _resolve_llm(args: argparse.Namespace, session: Session):
     if args.replay:
         return ReplayLLMProvider.from_session(session)
@@ -114,6 +148,7 @@ def _build_loop(
     args: argparse.Namespace,
     session: Session,
     runtime=None,
+    local_cleanup: list | None = None,
 ) -> AgentLoop:
     telemetry_plugin: TelemetryPlugin | None = None
     system_prompt: str | None = None
@@ -140,14 +175,25 @@ def _build_loop(
         ctx = Context()
         FilesystemPlugin().install(ctx, {})
         registry = ctx.tools
-        telemetry_plugin = None
         if getattr(args, "telemetry", False):
-            telemetry_plugin = TelemetryPlugin()
-            telemetry_plugin.install(ctx, {})
+            TelemetryPlugin().install(ctx, {})
+
+        clickhouse_config = _clickhouse_config_from_args(args)
+        if clickhouse_config is not None:
+            from liteness.plugins.clickhouse import ClickHousePlugin
+
+            clickhouse_plugin = ClickHousePlugin()
+            clickhouse_plugin.install(ctx, clickhouse_config)
+            if local_cleanup is not None:
+                local_cleanup.append((ctx, clickhouse_plugin))
 
         def event_sink(event) -> None:
-            if telemetry_plugin is not None:
-                telemetry_plugin.projector.process(event)
+            ctx.emit(
+                "session/event",
+                event.type,
+                event.payload,
+                session_event=event,
+            )
 
     model = args.model
     if model is None:
@@ -170,6 +216,7 @@ def _build_loop(
 def run_command(args: argparse.Namespace) -> int:
     session = _resolve_session(args)
     runtime = None
+    local_cleanup: list = []
 
     if args.preset:
         try:
@@ -178,13 +225,16 @@ def run_command(args: argparse.Namespace) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-    loop = _build_loop(args, session, runtime=runtime)
+    loop = _build_loop(args, session, runtime=runtime, local_cleanup=local_cleanup)
 
     try:
         result = loop.run_turn(session, args.prompt)
     finally:
         if runtime is not None:
             dispose_runtime(runtime)
+        else:
+            for ctx, plugin in local_cleanup:
+                plugin.uninstall(ctx)
 
     print(_summarize_session(session, result))
     if result.final_output:
@@ -215,10 +265,18 @@ def run_command(args: argparse.Namespace) -> int:
 def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime | None:
     if not args.preset:
         return None
+    extra_plugins: list[str] | None = None
+    extra_plugin_config: dict[str, dict[str, Any]] | None = None
+    clickhouse_config = _clickhouse_config_from_args(args)
+    if clickhouse_config is not None:
+        extra_plugins = ["clickhouse"]
+        extra_plugin_config = {"clickhouse": clickhouse_config}
     return create_runtime(
         preset_name=args.preset,
         session=session,
         project_id=args.project_id,
+        extra_plugins=extra_plugins,
+        extra_plugin_config=extra_plugin_config,
     )
 
 
@@ -479,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Enable live telemetry plugin during the run",
     )
+    _add_clickhouse_flags(run_parser)
     run_parser.set_defaults(func=run_command)
 
     repl_parser = sub.add_parser("repl", help="Interactive REPL — one live session across prompts")
