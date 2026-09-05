@@ -68,3 +68,83 @@ def test_dedupe_event_id(tmp_path: Path) -> None:
     second = projector.project_event(event)
     assert first is not None and second is not None
     assert first.event_id == second.event_id == "e1"
+
+
+def test_shutdown_honors_timeout(tmp_path: Path) -> None:
+    client = FakeClickHouseClient(insert_delay_s=2.0)
+    exporter = ClickHouseExporter(
+        client,
+        spill_path=tmp_path / "spill.jsonl",
+        projector=ClickHouseProjector(),
+        flush_interval_s=0.05,
+        batch_size=10,
+    )
+    row = ClickHouseProjector().project_event(_event())
+    assert row is not None
+    exporter.emit_session(row)
+    started = time.monotonic()
+    exporter.shutdown(session_id="s1", timeout_s=0.3)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0
+
+
+def test_emit_never_raises_when_spill_fails(tmp_path: Path) -> None:
+    spill_dir = tmp_path / "spill_is_dir"
+    spill_dir.mkdir()
+    client = FakeClickHouseClient()
+    exporter = ClickHouseExporter(
+        client,
+        spill_path=spill_dir,
+        projector=ClickHouseProjector(),
+        queue_maxsize=1,
+        flush_interval_s=10.0,
+        batch_size=100,
+    )
+    row = ClickHouseProjector().project_event(_event())
+    assert row is not None
+    exporter.emit_session(row)
+    exporter.emit_session(row)
+    exporter.shutdown()
+
+
+def test_emit_never_raises_on_unserializable_row(tmp_path: Path, monkeypatch) -> None:
+    client = FakeClickHouseClient()
+    exporter = ClickHouseExporter(
+        client,
+        spill_path=tmp_path / "spill.jsonl",
+        projector=ClickHouseProjector(),
+        queue_maxsize=0,
+        flush_interval_s=10.0,
+        batch_size=100,
+    )
+    original_dumps = json.dumps
+
+    def _fail_spill_dumps(obj, *args, **kwargs):
+        if isinstance(obj, dict) and "table" in obj and "row" in obj:
+            raise TypeError("not serializable")
+        return original_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "liteness.clickhouse.exporter.json.dumps", _fail_spill_dumps
+    )
+    exporter.emit("session_events", {"bad": "value"})
+    exporter.shutdown()
+
+
+def test_flush_window_not_reset_by_steady_stream(tmp_path: Path) -> None:
+    client = FakeClickHouseClient()
+    exporter = ClickHouseExporter(
+        client,
+        spill_path=tmp_path / "spill.jsonl",
+        projector=ClickHouseProjector(),
+        flush_interval_s=0.2,
+        batch_size=1000,
+    )
+    row = ClickHouseProjector().project_event(_event())
+    assert row is not None
+    exporter.emit_session(row)
+    time.sleep(0.1)
+    exporter.emit_session(row)
+    time.sleep(0.15)
+    assert len(client.calls) >= 1
+    exporter.shutdown()

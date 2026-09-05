@@ -56,7 +56,10 @@ class ClickHouseExporter:
         try:
             self._queue.put_nowait((table, row))
         except queue.Full:
-            self._spill(table, row)
+            try:
+                self._spill(table, row)
+            except Exception:
+                logger.exception("failed to spill queue-full ClickHouse row")
 
     def emit_session(self, row: SessionEventRow) -> None:
         self.emit(_SESSION_EVENTS, row.to_insert_dict())
@@ -65,12 +68,18 @@ class ClickHouseExporter:
         self.emit(_EVAL_RESULTS, row.to_insert_dict())
 
     def shutdown(self, session_id: str = "", timeout_s: float = 3.0) -> None:
+        deadline = time.monotonic() + timeout_s
         self._stopping = True
+
         try:
-            self._queue.put_nowait(_SENTINEL)
+            put_timeout = min(0.1, max(0.0, deadline - time.monotonic()))
+            if put_timeout > 0:
+                self._queue.put(_SENTINEL, timeout=put_timeout)
         except queue.Full:
             pass
-        self._worker.join(timeout=timeout_s)
+
+        remaining = max(0.0, deadline - time.monotonic())
+        self._worker.join(timeout=remaining)
 
         shutdown_row = self.projector.project_ops(
             "ops/shutdown",
@@ -78,10 +87,12 @@ class ClickHouseExporter:
             {"session_id": session_id},
         )
         shutdown_dict = shutdown_row.to_insert_dict()
-        try:
-            self.client.insert_rows(_SESSION_EVENTS, [shutdown_dict])
-        except Exception:
-            self._spill(_SESSION_EVENTS, shutdown_dict)
+        remaining = max(0.0, deadline - time.monotonic())
+        if not self._try_insert_within(_SESSION_EVENTS, [shutdown_dict], remaining):
+            try:
+                self._spill(_SESSION_EVENTS, shutdown_dict)
+            except Exception:
+                logger.exception("failed to spill ops/shutdown row")
 
         while True:
             try:
@@ -91,12 +102,17 @@ class ClickHouseExporter:
             if item is _SENTINEL:
                 continue
             table, row = item
-            self._spill(table, row)
+            try:
+                self._spill(table, row)
+            except Exception:
+                logger.exception("failed to spill queued row during shutdown")
 
         self._degraded_emitted = False
 
     def _worker_loop(self) -> None:
         while True:
+            if self._stopping:
+                break
             try:
                 first = self._queue.get(timeout=self.flush_interval_s)
             except queue.Empty:
@@ -105,9 +121,16 @@ class ClickHouseExporter:
                 break
 
             batch: list[tuple[str, dict[str, Any]]] = [first]
+            deadline = time.monotonic() + self.flush_interval_s
+
             while len(batch) < self.batch_size:
+                if self._stopping:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
-                    item = self._queue.get(timeout=self.flush_interval_s)
+                    item = self._queue.get(timeout=remaining)
                 except queue.Empty:
                     break
                 if item is _SENTINEL:
@@ -117,6 +140,9 @@ class ClickHouseExporter:
 
             self._flush_collected(batch)
 
+            if self._stopping:
+                break
+
     def _flush_collected(self, items: list[tuple[str, dict[str, Any]]]) -> None:
         by_table: dict[str, list[dict[str, Any]]] = {}
         for table, row in items:
@@ -125,6 +151,14 @@ class ClickHouseExporter:
             self._flush_batch(table, rows)
 
     def _flush_batch(self, table: str, rows: list[dict[str, Any]]) -> None:
+        if self._stopping:
+            for row in rows:
+                try:
+                    self._spill(table, row)
+                except Exception:
+                    logger.exception("failed to spill row during shutdown flush")
+            return
+
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -156,8 +190,32 @@ class ClickHouseExporter:
             else:
                 self.emit_session(ops_row)
 
+    def _try_insert_within(
+        self, table: str, rows: list[dict[str, Any]], timeout_s: float
+    ) -> bool:
+        if timeout_s <= 0 or not rows:
+            return False
+
+        result: dict[str, Any] = {"ok": False}
+
+        def _insert() -> None:
+            try:
+                self.client.insert_rows(table, rows)
+                result["ok"] = True
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=_insert, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout_s)
+        return result["ok"] and not thread.is_alive()
+
     def _spill(self, table: str, row: dict[str, Any]) -> None:
-        line = json.dumps({"table": table, "row": row}, ensure_ascii=False)
+        try:
+            line = json.dumps({"table": table, "row": row}, ensure_ascii=False)
+        except (TypeError, ValueError):
+            logger.exception("failed to serialize ClickHouse row for spill")
+            return
         try:
             self.spill_path.parent.mkdir(parents=True, exist_ok=True)
             with self.spill_path.open("a", encoding="utf-8") as handle:
