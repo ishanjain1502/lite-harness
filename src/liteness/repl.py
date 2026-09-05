@@ -29,6 +29,7 @@ class ReplConfig:
     readme: str
     telemetry: bool
     verbose: bool
+    debug: bool = False
     eval_file: str | None = None
     clickhouse: bool = False
     clickhouse_full: bool = False
@@ -218,13 +219,19 @@ class ReplSession:
             loop.event_sink = prev_sink
             self._current_cancel = None
 
-        if streamed:
+        if streamed and self.config.debug:
             self._out("")
         if result.final_output and result.final_output not in "".join(streamed):
             self._out(result.final_output)
-        self._out(f"[turn {result.turn} · {result.status} · {result.stop_reason.value} · {result.steps_run} steps]")
+        if self.config.debug:
+            self._out(
+                f"[turn {result.turn} · {result.status} · "
+                f"{result.stop_reason.value} · {result.steps_run} steps]"
+            )
 
     def _on_event(self, event, streamed: list[str]) -> None:
+        if not self.config.debug:
+            return
         if event.type == "assistant/chunk":
             delta = event.payload.get("content_delta") or ""
             if delta:

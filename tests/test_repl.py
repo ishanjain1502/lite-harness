@@ -20,7 +20,7 @@ def _config(**overrides) -> ReplConfig:
     base = dict(
         preset=None, provider="mock", model=None, project_id="default",
         max_steps=10, session_file=None, readme="README.md",
-        telemetry=False, verbose=False, eval_file=None,
+        telemetry=False, verbose=False, debug=False, eval_file=None,
         clickhouse=False, clickhouse_full=False,
         clickhouse_url=None, clickhouse_database="liteness",
     )
@@ -149,7 +149,7 @@ def test_repl_stream_writes_inline_without_extra_newlines(
     assert stdout_writes == ["Hel", "lo"]
 
     streamed: list[str] = []
-    repl = ReplSession(_config(), output_fn=print)
+    repl = ReplSession(_config(debug=True), output_fn=print)
     event = type("E", (), {"type": "assistant/chunk", "payload": {"content_delta": "x"}})()
     repl._on_event(event, streamed)
 
@@ -157,7 +157,7 @@ def test_repl_stream_writes_inline_without_extra_newlines(
     assert streamed == ["x"]
 
 
-def test_repl_runs_turn_and_streams(tmp_path: Path) -> None:
+def test_repl_quiet_mode_hides_tool_trace(tmp_path: Path) -> None:
     readme = tmp_path / "README.md"
     readme.write_text("hello world", encoding="utf-8")
     outputs: list[str] = []
@@ -168,8 +168,31 @@ def test_repl_runs_turn_and_streams(tmp_path: Path) -> None:
     ]))
     assert repl.run() == 0
     joined = "\n".join(outputs)
+    assert "-> tool:" not in joined
+    assert "-> result:" not in joined
+    assert "[turn " not in joined
+    assert "done reading" in joined
+    assert repl.session._turn == 1
+
+
+def test_repl_debug_mode_shows_tool_trace(tmp_path: Path) -> None:
+    readme = tmp_path / "README.md"
+    readme.write_text("hello world", encoding="utf-8")
+    outputs: list[str] = []
+    repl = ReplSession(
+        _config(debug=True),
+        input_fn=_iter_input(["read it", ":q"]),
+        output_fn=outputs.append,
+    )
+    _wire_mock(repl, MockLLMProvider(steps=[
+        MockStep(step=1, tool_calls=[ToolCallDraft(call_id="c1", name="read_file", arguments={"path": str(readme)})]),
+        MockStep(step=2, content="done reading"),
+    ]))
+    assert repl.run() == 0
+    joined = "\n".join(outputs)
     assert "-> tool: read_file" in joined
     assert "-> result:" in joined
+    assert "[turn " in joined
     rendered = "".join(outputs)
     assert "done reading" in rendered
     assert rendered.count("done reading") == 1
@@ -406,8 +429,6 @@ def test_repl_cancel_mid_turn_returns_to_prompt(tmp_path: Path) -> None:
     t.join(timeout=5)
     joined = "\n".join(outputs)
     assert code == 0
-    assert "user_cancelled" in joined
-    # REPL returned to the prompt and processed :q
     assert repl.session._turn == 1
 
 

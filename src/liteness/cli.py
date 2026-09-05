@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from liteness.env import load_dotenv
 from liteness.harness import create_runtime, dispose_runtime, HarnessRuntime
 from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
 from liteness.providers import default_model, resolve_provider
@@ -303,6 +304,7 @@ def repl_command(args: argparse.Namespace) -> int:
         readme=args.readme,
         telemetry=args.telemetry,
         verbose=args.verbose,
+        debug=args.debug,
         eval_file=args.eval_file,
         clickhouse=args.clickhouse,
         clickhouse_full=args.clickhouse_full,
@@ -598,6 +600,7 @@ def eval_compare_command(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     parser = argparse.ArgumentParser(prog="liteness", description="lite-ness harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -676,6 +679,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Default eval suite YAML for repl eval command",
     )
     repl_parser.add_argument("--telemetry", action="store_true")
+    repl_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show tool calls, result sizes, streaming chunks, and turn summary",
+    )
     repl_parser.add_argument("-v", "--verbose", action="store_true")
     _add_clickhouse_flags(repl_parser)
     repl_parser.set_defaults(func=repl_command)

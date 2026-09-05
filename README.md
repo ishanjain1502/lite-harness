@@ -40,6 +40,8 @@ In the REPL:
 - `:preset <name>` — switch preset in place (same session)
 - `:q` / Ctrl+D — quit
 
+Pass `--debug` at startup to show tool calls, result sizes, streaming chunks, and turn summaries during each prompt. Without it, only the final answer is printed (use `:history` or `:report` to inspect the session).
+
 Ctrl+C cancels the in-flight turn and returns to the prompt.
 
 > **Streaming note:** assistant chunks are emitted after each turn's LLM stream
