@@ -29,4 +29,5 @@ pythonpath = ["src"]
 markers = [
     "eval: offline eval tests (fast tier)",
     "eval_live: live agent + eval regression tests (slow tier)",
+    "clickhouse_integration: requires LITENESS_CLICKHOUSE_URL",
 ]

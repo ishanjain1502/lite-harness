@@ -1,4 +1,5 @@
 discussionDocs/
+.liteness/
 
 # Python
 __pycache__/

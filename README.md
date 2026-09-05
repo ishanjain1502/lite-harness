@@ -119,6 +119,18 @@ liteness run --preset video_editor --provider google --max-steps 15 \
 
 Output videos are written to `./video-output/` by default.
 
+## ClickHouse export (optional)
+
+```bash
+pip install -e ".[clickhouse]"
+docker compose -f docker/clickhouse/docker-compose.yml up -d
+liteness run --clickhouse --session-file .sessions/demo.jsonl "Read README.md and summarize."
+# inspect: examples/clickhouse/queries.sql
+liteness export-clickhouse .sessions/demo.jsonl   # backfill (redacted)
+```
+
+Default export redacts message content and tool arguments. Use `--clickhouse-full` (or `export-clickhouse --full`) only on a trusted local warehouse.
+
 ## Tests
 
 ```bash
