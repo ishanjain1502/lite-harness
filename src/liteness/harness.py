@@ -62,14 +62,20 @@ def create_runtime(
     project_id: str = "default",
     presets_dir: Path | None = None,
     extra_plugins: list[str] | None = None,
+    extra_plugin_config: dict[str, dict[str, Any]] | None = None,
 ) -> HarnessRuntime:
     preset = load_preset(preset_name, presets_dir=presets_dir)
     plugin_specs = list(preset.plugins)
+    extra_plugin_config = extra_plugin_config or {}
     if extra_plugins:
-        existing = {spec.name for spec in plugin_specs}
+        existing = {spec.name: spec for spec in plugin_specs}
         for name in extra_plugins:
             if name not in existing:
-                plugin_specs.append(PluginSpec(name=name))
+                plugin_specs.append(
+                    PluginSpec(name=name, config=dict(extra_plugin_config.get(name, {})))
+                )
+            else:
+                existing[name].config.update(extra_plugin_config.get(name, {}))
 
     for spec in plugin_specs:
         if spec.name not in list_plugins():

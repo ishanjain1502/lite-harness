@@ -1,4 +1,5 @@
 discussionDocs/
+.liteness/
 
 # Python
 __pycache__/
@@ -20,4 +21,7 @@ venv/
 sessions/
 .sessions/
 video-output/
-docs/
+docs/*
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/day-10-soak.md

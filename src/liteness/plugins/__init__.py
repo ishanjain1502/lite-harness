@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable
 
 from liteness.plugins.base import Plugin, PluginConfigError
+from liteness.plugins.clickhouse import ClickHousePlugin
 from liteness.plugins.filesystem import FilesystemPlugin
 from liteness.plugins.memory import MemoryPlugin
 from liteness.plugins.rag import RAGPlugin
@@ -18,6 +19,7 @@ _BUILTIN_FACTORIES: dict[str, Callable[[], Plugin]] = {
     "memory": MemoryPlugin,
     "rag": RAGPlugin,
     "telemetry": TelemetryPlugin,
+    "clickhouse": ClickHousePlugin,
     "video": VideoPlugin,
 }
 

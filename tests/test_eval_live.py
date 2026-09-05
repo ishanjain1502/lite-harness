@@ -159,3 +159,33 @@ def test_execute_live_case_writes_session(tmp_path: Path) -> None:
     path = execute_live_case(case, suite, config)
     assert path.exists()
     assert "tool/call" in path.read_text(encoding="utf-8")
+
+
+def test_live_eval_telemetry_processes_each_event_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from liteness.session import Session
+    from liteness.telemetry.projector import EventProjector
+
+    processed_ids: list[str] = []
+    original_process = EventProjector.process
+
+    def tracking_process(self, event):
+        processed_ids.append(event.id)
+        return original_process(self, event)
+
+    monkeypatch.setattr(EventProjector, "process", tracking_process)
+    readme = tmp_path / "README.md"
+    readme.write_text("telemetry test", encoding="utf-8")
+    case = EvalCase(id="telemetry-once", input="summarize")
+    suite = EvalSuite(name="live", cases=[case])
+    config = LiveEvalConfig(
+        sessions_dir=tmp_path / "sessions",
+        readme=str(readme),
+        telemetry=True,
+    )
+
+    path = execute_live_case(case, suite, config)
+    session = Session.load_from_jsonl(path)
+
+    assert processed_ids == [event.id for event in session.events]

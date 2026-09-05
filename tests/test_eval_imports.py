@@ -13,6 +13,7 @@ FORBIDDEN_EVALUATOR_IMPORTS = (
     "liteness.replay",
     "liteness.providers",
     "liteness.policies",
+    "liteness.clickhouse",
 )
 
 

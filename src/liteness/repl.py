@@ -29,7 +29,12 @@ class ReplConfig:
     readme: str
     telemetry: bool
     verbose: bool
+    debug: bool = False
     eval_file: str | None = None
+    clickhouse: bool = False
+    clickhouse_full: bool = False
+    clickhouse_url: str | None = None
+    clickhouse_database: str = "liteness"
     # NOTE: keep ReplConfig matching the task brief exactly.
     # replay is injected into the argparse.Namespace when building the loop.
 
@@ -73,6 +78,7 @@ class ReplSession:
         self.runtime: HarnessRuntime | None = None
         self.loop: AgentLoop | None = None
         self._current_cancel = None
+        self._local_cleanup: list = []
 
     def run(self) -> int:
         if self.session is None:
@@ -91,6 +97,7 @@ class ReplSession:
                 if self.runtime is not None:
                     dispose_runtime(self.runtime)
                     self.runtime = None
+                self._dispose_local_cleanup()
                 return 1
         self._print_banner()
         return self._read_loop()
@@ -103,10 +110,28 @@ class ReplSession:
     def _build_runtime(self) -> HarnessRuntime | None:
         if not self.config.preset:
             return None
+        extra_plugins: list[str] | None = None
+        extra_plugin_config: dict[str, dict] | None = None
+        if self.config.clickhouse or self.config.clickhouse_full:
+            from liteness.cli import _clickhouse_config_from_args
+            import argparse
+
+            args = argparse.Namespace(
+                clickhouse=self.config.clickhouse,
+                clickhouse_full=self.config.clickhouse_full,
+                clickhouse_url=self.config.clickhouse_url,
+                clickhouse_database=self.config.clickhouse_database,
+            )
+            clickhouse_config = _clickhouse_config_from_args(args)
+            if clickhouse_config is not None:
+                extra_plugins = ["clickhouse"]
+                extra_plugin_config = {"clickhouse": clickhouse_config}
         return create_runtime(
             preset_name=self.config.preset,
             session=self.session,  # type: ignore[arg-type]
             project_id=self.config.project_id,
+            extra_plugins=extra_plugins,
+            extra_plugin_config=extra_plugin_config,
         )
 
     def _build_loop(self, *, runtime: HarnessRuntime | None = None) -> AgentLoop:
@@ -118,6 +143,7 @@ class ReplSession:
             args,
             self.session,
             runtime=self.runtime if runtime is None else runtime,
+            local_cleanup=self._local_cleanup,
         )
 
     def _print_banner(self) -> None:
@@ -193,13 +219,19 @@ class ReplSession:
             loop.event_sink = prev_sink
             self._current_cancel = None
 
-        if streamed:
+        if streamed and self.config.debug:
             self._out("")
         if result.final_output and result.final_output not in "".join(streamed):
             self._out(result.final_output)
-        self._out(f"[turn {result.turn} · {result.status} · {result.stop_reason.value} · {result.steps_run} steps]")
+        if self.config.debug:
+            self._out(
+                f"[turn {result.turn} · {result.status} · "
+                f"{result.stop_reason.value} · {result.steps_run} steps]"
+            )
 
     def _on_event(self, event, streamed: list[str]) -> None:
+        if not self.config.debug:
+            return
         if event.type == "assistant/chunk":
             delta = event.payload.get("content_delta") or ""
             if delta:
@@ -220,6 +252,13 @@ class ReplSession:
         if self.runtime is not None:
             dispose_runtime(self.runtime)
             self.runtime = None
+        self._dispose_local_cleanup()
+
+    def _dispose_local_cleanup(self) -> None:
+        for ctx, plugin in self._local_cleanup:
+            plugin.uninstall(ctx)
+        self._local_cleanup.clear()
+
     def _handle_command(self, line: str) -> bool:
         if line == "eval" or line.startswith("eval "):
             self._do_eval(line)
@@ -358,6 +397,8 @@ class ReplSession:
         self.loop = new_loop
         if old_runtime is not None:
             dispose_runtime(old_runtime)
+        else:
+            self._dispose_local_cleanup()
         tools = self.loop.tools.names() if self.loop else []
         self._out(f"switched to preset: {name} (tools: {', '.join(tools)})")
 

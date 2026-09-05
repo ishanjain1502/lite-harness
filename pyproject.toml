@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = ["pyyaml>=6.0"]
 
 [project.optional-dependencies]
+clickhouse = ["httpx>=0.27"]
 openai = ["httpx>=0.27"]
 google = ["google-genai>=1.0"]
 all-providers = ["httpx>=0.27", "google-genai>=1.0"]
@@ -28,4 +29,5 @@ pythonpath = ["src"]
 markers = [
     "eval: offline eval tests (fast tier)",
     "eval_live: live agent + eval regression tests (slow tier)",
+    "clickhouse_integration: requires LITENESS_CLICKHOUSE_URL",
 ]

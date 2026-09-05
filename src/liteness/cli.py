@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
+from liteness.env import load_dotenv
 from liteness.harness import create_runtime, dispose_runtime, HarnessRuntime
 from liteness.llm import MockLLMProvider, MockStep, ToolCallDraft
 from liteness.providers import default_model, resolve_provider
@@ -102,6 +106,38 @@ def _resolve_session(args: argparse.Namespace) -> Session:
     return Session()
 
 
+def _add_clickhouse_flags(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--clickhouse",
+        action="store_true",
+        help="Export events to ClickHouse (redacted)",
+    )
+    group.add_argument(
+        "--clickhouse-full",
+        action="store_true",
+        help="Export events to ClickHouse with raw payloads",
+    )
+    parser.add_argument("--clickhouse-url", default=None, help="ClickHouse HTTP URL")
+    parser.add_argument("--clickhouse-database", default="liteness")
+
+
+def _clickhouse_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    if not getattr(args, "clickhouse", False) and not getattr(args, "clickhouse_full", False):
+        return None
+    mode = "full" if getattr(args, "clickhouse_full", False) else "redacted"
+    url = (
+        getattr(args, "clickhouse_url", None)
+        or os.environ.get("LITENESS_CLICKHOUSE_URL")
+        or "http://localhost:8123"
+    )
+    return {
+        "url": url,
+        "database": getattr(args, "clickhouse_database", "liteness") or "liteness",
+        "mode": mode,
+    }
+
+
 def _resolve_llm(args: argparse.Namespace, session: Session):
     if args.replay:
         return ReplayLLMProvider.from_session(session)
@@ -114,6 +150,7 @@ def _build_loop(
     args: argparse.Namespace,
     session: Session,
     runtime=None,
+    local_cleanup: list | None = None,
 ) -> AgentLoop:
     telemetry_plugin: TelemetryPlugin | None = None
     system_prompt: str | None = None
@@ -140,14 +177,25 @@ def _build_loop(
         ctx = Context()
         FilesystemPlugin().install(ctx, {})
         registry = ctx.tools
-        telemetry_plugin = None
         if getattr(args, "telemetry", False):
-            telemetry_plugin = TelemetryPlugin()
-            telemetry_plugin.install(ctx, {})
+            TelemetryPlugin().install(ctx, {})
+
+        clickhouse_config = _clickhouse_config_from_args(args)
+        if clickhouse_config is not None:
+            from liteness.plugins.clickhouse import ClickHousePlugin
+
+            clickhouse_plugin = ClickHousePlugin()
+            clickhouse_plugin.install(ctx, clickhouse_config)
+            if local_cleanup is not None:
+                local_cleanup.append((ctx, clickhouse_plugin))
 
         def event_sink(event) -> None:
-            if telemetry_plugin is not None:
-                telemetry_plugin.projector.process(event)
+            ctx.emit(
+                "session/event",
+                event.type,
+                event.payload,
+                session_event=event,
+            )
 
     model = args.model
     if model is None:
@@ -170,6 +218,7 @@ def _build_loop(
 def run_command(args: argparse.Namespace) -> int:
     session = _resolve_session(args)
     runtime = None
+    local_cleanup: list = []
 
     if args.preset:
         try:
@@ -178,13 +227,27 @@ def run_command(args: argparse.Namespace) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-    loop = _build_loop(args, session, runtime=runtime)
+    try:
+        loop = _build_loop(
+            args, session, runtime=runtime, local_cleanup=local_cleanup
+        )
+    except PluginConfigError as exc:
+        if runtime is not None:
+            dispose_runtime(runtime)
+        else:
+            for ctx, plugin in local_cleanup:
+                plugin.uninstall(ctx)
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         result = loop.run_turn(session, args.prompt)
     finally:
         if runtime is not None:
             dispose_runtime(runtime)
+        else:
+            for ctx, plugin in local_cleanup:
+                plugin.uninstall(ctx)
 
     print(_summarize_session(session, result))
     if result.final_output:
@@ -215,10 +278,18 @@ def run_command(args: argparse.Namespace) -> int:
 def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime | None:
     if not args.preset:
         return None
+    extra_plugins: list[str] | None = None
+    extra_plugin_config: dict[str, dict[str, Any]] | None = None
+    clickhouse_config = _clickhouse_config_from_args(args)
+    if clickhouse_config is not None:
+        extra_plugins = ["clickhouse"]
+        extra_plugin_config = {"clickhouse": clickhouse_config}
     return create_runtime(
         preset_name=args.preset,
         session=session,
         project_id=args.project_id,
+        extra_plugins=extra_plugins,
+        extra_plugin_config=extra_plugin_config,
     )
 
 
@@ -233,6 +304,12 @@ def repl_command(args: argparse.Namespace) -> int:
         readme=args.readme,
         telemetry=args.telemetry,
         verbose=args.verbose,
+        debug=args.debug,
+        eval_file=args.eval_file,
+        clickhouse=args.clickhouse,
+        clickhouse_full=args.clickhouse_full,
+        clickhouse_url=args.clickhouse_url,
+        clickhouse_database=args.clickhouse_database,
     )
     return ReplSession(config).run()
 
@@ -315,6 +392,98 @@ def export_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _make_clickhouse_exporter(config: dict[str, Any]):
+    from liteness.clickhouse.client import HttpClickHouseClient
+    from liteness.clickhouse.exporter import ClickHouseExporter
+    from liteness.clickhouse.projector import ClickHouseProjector
+
+    client = config.get("client") or HttpClickHouseClient(
+        url=config["url"], database=config["database"]
+    )
+    try:
+        client.ensure_schema()
+    except Exception:
+        logging.getLogger("liteness.clickhouse").warning(
+            "schema ensure failed", exc_info=True
+        )
+    return ClickHouseExporter(
+        client,
+        spill_path=Path(config.get("spill_path") or ".liteness/clickhouse-spill.jsonl"),
+        projector=ClickHouseProjector(mode=config.get("mode", "redacted")),
+    )
+
+
+def export_clickhouse_command(args: argparse.Namespace) -> int:
+    config = {
+        "url": args.clickhouse_url
+        or os.environ.get("LITENESS_CLICKHOUSE_URL")
+        or "http://localhost:8123",
+        "database": args.clickhouse_database,
+        "mode": "full" if args.full else "redacted",
+    }
+    session = Session.load_from_jsonl(args.session_file, recover=False)
+    exporter = _make_clickhouse_exporter(config)
+    projector = exporter.projector
+    projected_count = 0
+    try:
+        for event in session.events:
+            row = projector.project_event(event)
+            if row is not None:
+                exporter.emit_session(row)
+                projected_count += 1
+    finally:
+        exporter.shutdown(session_id=session.session_id)
+    print(f"Exported {projected_count} events from {args.session_file}")
+    return 0
+
+
+def _export_eval_report(args: argparse.Namespace, report) -> None:
+    config = _clickhouse_config_from_args(args)
+    if config is None:
+        return
+    from liteness.clickhouse.projector import project_eval_result
+
+    exporter = _make_clickhouse_exporter(config)
+    projector = exporter.projector
+    preset = getattr(args, "preset", "") or ""
+    provider = getattr(args, "provider", "") or ""
+    model = getattr(args, "model", "") or ""
+    eval_rows: list[dict[str, Any]] = []
+    try:
+        for case in report.cases:
+            session_id = ""
+            if case.session_path:
+                path = Path(case.session_path)
+                if path.exists():
+                    session = Session.load_from_jsonl(path, recover=False)
+                    session_id = session.session_id
+                    for event in session.events:
+                        row = projector.project_event(event)
+                        if row is not None:
+                            exporter.emit_session(row)
+            for result in case.results:
+                row = project_eval_result(
+                    report=report,
+                    case=case,
+                    result=result,
+                    session_id=session_id,
+                    mode=config.get("mode", "redacted"),
+                    preset=preset,
+                    provider=provider,
+                    model=model or "",
+                )
+                eval_rows.append(row.to_insert_dict())
+        if eval_rows:
+            # Sync insert: eval_results must land before shutdown would spill small batches.
+            try:
+                exporter.client.insert_rows("eval_results", eval_rows)
+            except Exception:
+                for row in eval_rows:
+                    exporter._spill("eval_results", row)
+    finally:
+        exporter.shutdown()
+
+
 def _finish_eval_command(args: argparse.Namespace, report) -> int:
     if args.baseline:
         try:
@@ -341,6 +510,14 @@ def _finish_eval_command(args: argparse.Namespace, report) -> int:
             json_mod.dumps(report.to_dict(), indent=2) + "\n",
             encoding="utf-8",
         )
+
+    if _clickhouse_config_from_args(args):
+        try:
+            _export_eval_report(args, report)
+        except Exception:
+            logging.getLogger("liteness.clickhouse").warning(
+                "eval ClickHouse export failed", exc_info=True
+            )
 
     pass_rate = float(report.summary.get("pass_rate", 0.0))
     if pass_rate < args.min_score:
@@ -376,6 +553,7 @@ def eval_run_command(args: argparse.Namespace) -> int:
         max_steps=args.max_steps,
         sessions_dir=Path(args.sessions_dir),
         telemetry=args.telemetry,
+        clickhouse=_clickhouse_config_from_args(args),
     )
     try:
         report = run_suite_live(
@@ -422,6 +600,7 @@ def eval_compare_command(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     parser = argparse.ArgumentParser(prog="liteness", description="lite-ness harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -479,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Enable live telemetry plugin during the run",
     )
+    _add_clickhouse_flags(run_parser)
     run_parser.set_defaults(func=run_command)
 
     repl_parser = sub.add_parser("repl", help="Interactive REPL — one live session across prompts")
@@ -499,7 +679,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Default eval suite YAML for repl eval command",
     )
     repl_parser.add_argument("--telemetry", action="store_true")
+    repl_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show tool calls, result sizes, streaming chunks, and turn summary",
+    )
     repl_parser.add_argument("-v", "--verbose", action="store_true")
+    _add_clickhouse_flags(repl_parser)
     repl_parser.set_defaults(func=repl_command)
 
     report_parser = sub.add_parser("report", help="Build telemetry report from session JSONL")
@@ -535,6 +721,19 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("session_file", help="Source JSONL session log")
     export_parser.add_argument("output", help="Destination JSONL path")
     export_parser.set_defaults(func=export_command)
+
+    export_ch_parser = sub.add_parser(
+        "export-clickhouse", help="Backfill session JSONL into ClickHouse"
+    )
+    export_ch_parser.add_argument("session_file", help="JSONL session log path")
+    export_ch_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Export with raw payloads (default: redacted)",
+    )
+    export_ch_parser.add_argument("--clickhouse-url", default=None, help="ClickHouse HTTP URL")
+    export_ch_parser.add_argument("--clickhouse-database", default="liteness")
+    export_ch_parser.set_defaults(func=export_clickhouse_command)
 
     eval_parser = sub.add_parser("eval", help="Evaluate recorded agent sessions")
     eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True)
@@ -583,6 +782,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show per-evaluator details",
     )
+    _add_clickhouse_flags(eval_session_parser)
     eval_session_parser.set_defaults(func=eval_session_command)
 
     eval_run_parser = eval_sub.add_parser(
@@ -654,6 +854,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show per-evaluator details",
     )
+    _add_clickhouse_flags(eval_run_parser)
     eval_run_parser.set_defaults(func=eval_run_command)
 
     eval_compare_parser = eval_sub.add_parser(

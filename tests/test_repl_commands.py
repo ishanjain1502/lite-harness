@@ -12,7 +12,9 @@ def _config(**overrides) -> ReplConfig:
     base = dict(
         preset=None, provider="mock", model=None, project_id="default",
         max_steps=10, session_file=None, readme="README.md",
-        telemetry=False, verbose=False, eval_file=None,
+        telemetry=False, verbose=False, debug=False, eval_file=None,
+        clickhouse=False, clickhouse_full=False,
+        clickhouse_url=None, clickhouse_database="liteness",
     )
     base.update(overrides)
     return ReplConfig(**base)

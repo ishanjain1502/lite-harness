@@ -40,6 +40,8 @@ In the REPL:
 - `:preset <name>` — switch preset in place (same session)
 - `:q` / Ctrl+D — quit
 
+Pass `--debug` at startup to show tool calls, result sizes, streaming chunks, and turn summaries during each prompt. Without it, only the final answer is printed (use `:history` or `:report` to inspect the session).
+
 Ctrl+C cancels the in-flight turn and returns to the prompt.
 
 > **Streaming note:** assistant chunks are emitted after each turn's LLM stream
@@ -118,6 +120,18 @@ liteness run --preset video_editor --provider google --max-steps 15 \
 ```
 
 Output videos are written to `./video-output/` by default.
+
+## ClickHouse export (optional)
+
+```bash
+pip install -e ".[clickhouse]"
+docker compose -f docker/clickhouse/docker-compose.yml up -d
+liteness run --clickhouse --session-file .sessions/demo.jsonl "Read README.md and summarize."
+# inspect: examples/clickhouse/queries.sql
+liteness export-clickhouse .sessions/demo.jsonl   # backfill (redacted)
+```
+
+Default export redacts message content and tool arguments. Use `--clickhouse-full` (or `export-clickhouse --full`) only on a trusted local warehouse.
 
 ## Tests
 
