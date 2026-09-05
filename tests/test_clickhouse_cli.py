@@ -72,3 +72,21 @@ def test_eval_session_exports_eval_results(tmp_path, monkeypatch) -> None:
     assert rc in (0, 1)
     assert any(table == "eval_results" for table, _ in client.calls)
     assert any(table == "session_events" for table, _ in client.calls)
+
+
+def test_eval_clickhouse_export_failure_does_not_change_exit_code(monkeypatch) -> None:
+    fixtures = Path(__file__).parent / "fixtures" / "evals"
+    examples = Path(__file__).parent.parent / "examples" / "evals"
+    base_args = [
+        "eval", "session", str(fixtures / "weather-001.jsonl"),
+        "--eval-file", str(examples / "basic.yaml"),
+        "--case", "weather-001",
+    ]
+    expected_rc = main(base_args)
+
+    def raise_export(args, report):
+        raise RuntimeError("clickhouse down")
+
+    monkeypatch.setattr("liteness.cli._export_eval_report", raise_export)
+    rc = main([*base_args, "--clickhouse"])
+    assert rc == expected_rc

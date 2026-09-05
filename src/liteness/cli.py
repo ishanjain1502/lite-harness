@@ -459,6 +459,7 @@ def _export_eval_report(args: argparse.Namespace, report) -> None:
                 )
                 eval_rows.append(row.to_insert_dict())
         if eval_rows:
+            # Sync insert: eval_results must land before shutdown would spill small batches.
             exporter.client.insert_rows("eval_results", eval_rows)
     finally:
         exporter.shutdown()
@@ -492,7 +493,12 @@ def _finish_eval_command(args: argparse.Namespace, report) -> int:
         )
 
     if _clickhouse_config_from_args(args):
-        _export_eval_report(args, report)
+        try:
+            _export_eval_report(args, report)
+        except Exception:
+            logging.getLogger("liteness.clickhouse").warning(
+                "eval ClickHouse export failed", exc_info=True
+            )
 
     pass_rate = float(report.summary.get("pass_rate", 0.0))
     if pass_rate < args.min_score:
