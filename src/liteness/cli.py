@@ -292,6 +292,11 @@ def repl_command(args: argparse.Namespace) -> int:
         readme=args.readme,
         telemetry=args.telemetry,
         verbose=args.verbose,
+        eval_file=args.eval_file,
+        clickhouse=args.clickhouse,
+        clickhouse_full=args.clickhouse_full,
+        clickhouse_url=args.clickhouse_url,
+        clickhouse_database=args.clickhouse_database,
     )
     return ReplSession(config).run()
 
@@ -417,6 +422,48 @@ def export_clickhouse_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_eval_report(args: argparse.Namespace, report) -> None:
+    config = _clickhouse_config_from_args(args)
+    if config is None:
+        return
+    from liteness.clickhouse.projector import project_eval_result
+
+    exporter = _make_clickhouse_exporter(config)
+    projector = exporter.projector
+    preset = getattr(args, "preset", "") or ""
+    provider = getattr(args, "provider", "") or ""
+    model = getattr(args, "model", "") or ""
+    eval_rows: list[dict[str, Any]] = []
+    try:
+        for case in report.cases:
+            session_id = ""
+            if case.session_path:
+                path = Path(case.session_path)
+                if path.exists():
+                    session = Session.load_from_jsonl(path, recover=False)
+                    session_id = session.session_id
+                    for event in session.events:
+                        row = projector.project_event(event)
+                        if row is not None:
+                            exporter.emit_session(row)
+            for result in case.results:
+                row = project_eval_result(
+                    report=report,
+                    case=case,
+                    result=result,
+                    session_id=session_id,
+                    mode=config.get("mode", "redacted"),
+                    preset=preset,
+                    provider=provider,
+                    model=model or "",
+                )
+                eval_rows.append(row.to_insert_dict())
+        if eval_rows:
+            exporter.client.insert_rows("eval_results", eval_rows)
+    finally:
+        exporter.shutdown()
+
+
 def _finish_eval_command(args: argparse.Namespace, report) -> int:
     if args.baseline:
         try:
@@ -443,6 +490,9 @@ def _finish_eval_command(args: argparse.Namespace, report) -> int:
             json_mod.dumps(report.to_dict(), indent=2) + "\n",
             encoding="utf-8",
         )
+
+    if _clickhouse_config_from_args(args):
+        _export_eval_report(args, report)
 
     pass_rate = float(report.summary.get("pass_rate", 0.0))
     if pass_rate < args.min_score:
@@ -478,6 +528,7 @@ def eval_run_command(args: argparse.Namespace) -> int:
         max_steps=args.max_steps,
         sessions_dir=Path(args.sessions_dir),
         telemetry=args.telemetry,
+        clickhouse=_clickhouse_config_from_args(args),
     )
     try:
         report = run_suite_live(
@@ -603,6 +654,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     repl_parser.add_argument("--telemetry", action="store_true")
     repl_parser.add_argument("-v", "--verbose", action="store_true")
+    _add_clickhouse_flags(repl_parser)
     repl_parser.set_defaults(func=repl_command)
 
     report_parser = sub.add_parser("report", help="Build telemetry report from session JSONL")
@@ -699,6 +751,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show per-evaluator details",
     )
+    _add_clickhouse_flags(eval_session_parser)
     eval_session_parser.set_defaults(func=eval_session_command)
 
     eval_run_parser = eval_sub.add_parser(
@@ -770,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show per-evaluator details",
     )
+    _add_clickhouse_flags(eval_run_parser)
     eval_run_parser.set_defaults(func=eval_run_command)
 
     eval_compare_parser = eval_sub.add_parser(

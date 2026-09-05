@@ -30,6 +30,10 @@ class ReplConfig:
     telemetry: bool
     verbose: bool
     eval_file: str | None = None
+    clickhouse: bool = False
+    clickhouse_full: bool = False
+    clickhouse_url: str | None = None
+    clickhouse_database: str = "liteness"
     # NOTE: keep ReplConfig matching the task brief exactly.
     # replay is injected into the argparse.Namespace when building the loop.
 
@@ -103,10 +107,28 @@ class ReplSession:
     def _build_runtime(self) -> HarnessRuntime | None:
         if not self.config.preset:
             return None
+        extra_plugins: list[str] | None = None
+        extra_plugin_config: dict[str, dict] | None = None
+        if self.config.clickhouse or self.config.clickhouse_full:
+            from liteness.cli import _clickhouse_config_from_args
+            import argparse
+
+            args = argparse.Namespace(
+                clickhouse=self.config.clickhouse,
+                clickhouse_full=self.config.clickhouse_full,
+                clickhouse_url=self.config.clickhouse_url,
+                clickhouse_database=self.config.clickhouse_database,
+            )
+            clickhouse_config = _clickhouse_config_from_args(args)
+            if clickhouse_config is not None:
+                extra_plugins = ["clickhouse"]
+                extra_plugin_config = {"clickhouse": clickhouse_config}
         return create_runtime(
             preset_name=self.config.preset,
             session=self.session,  # type: ignore[arg-type]
             project_id=self.config.project_id,
+            extra_plugins=extra_plugins,
+            extra_plugin_config=extra_plugin_config,
         )
 
     def _build_loop(self, *, runtime: HarnessRuntime | None = None) -> AgentLoop:

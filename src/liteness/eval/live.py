@@ -34,6 +34,7 @@ class LiveEvalConfig:
     max_steps: int = 10
     sessions_dir: Path = Path(".sessions/evals")
     telemetry: bool = False
+    clickhouse: dict | None = None
     llm: LLMProvider | None = None
     tools: ToolRegistry | None = None
 
@@ -55,6 +56,7 @@ def execute_live_case(
     session_path = session_path_for_case(config, case.id)
     session = Session.open(session_path)
     runtime: HarnessRuntime | None = None
+    local_ctx: Context | None = None
 
     try:
         if config.llm is not None and config.tools is not None:
@@ -66,19 +68,33 @@ def execute_live_case(
         else:
             preset = config.preset or suite.preset
             if preset:
+                extra_plugins: list[str] | None = None
+                extra_plugin_config: dict[str, dict] | None = None
+                if config.clickhouse is not None:
+                    extra_plugins = ["clickhouse"]
+                    extra_plugin_config = {"clickhouse": config.clickhouse}
                 runtime = create_runtime(
                     preset_name=preset,
                     session=session,
                     project_id=config.project_id,
+                    extra_plugins=extra_plugins,
+                    extra_plugin_config=extra_plugin_config,
                 )
                 loop = _build_loop_from_runtime(runtime, config, session)
             else:
-                loop = _build_default_loop(config, session)
+                loop, local_ctx = _build_default_loop(config, session)
 
         loop.run_turn(session, case.input)
     finally:
         if runtime is not None:
             dispose_runtime(runtime)
+        elif local_ctx is not None:
+            clickhouse_plugin = local_ctx.services.get("clickhouse")
+            if clickhouse_plugin is not None:
+                from liteness.plugins.clickhouse import ClickHousePlugin
+
+                if isinstance(clickhouse_plugin, ClickHousePlugin):
+                    clickhouse_plugin.uninstall(local_ctx)
 
     return session_path
 
@@ -136,15 +152,25 @@ def _mock_for_readme_task(readme_path: str = "README.md") -> MockLLMProvider:
     )
 
 
-def _build_default_loop(config: LiveEvalConfig, session: Session) -> AgentLoop:
+def _build_default_loop(config: LiveEvalConfig, session: Session) -> tuple[AgentLoop, Context]:
     ctx = Context()
     FilesystemPlugin().install(ctx, {})
     telemetry_plugin: TelemetryPlugin | None = None
     if config.telemetry:
         telemetry_plugin = TelemetryPlugin()
         telemetry_plugin.install(ctx, {})
+    if config.clickhouse is not None:
+        from liteness.plugins.clickhouse import ClickHousePlugin
+
+        ClickHousePlugin().install(ctx, config.clickhouse)
 
     def event_sink(event) -> None:
+        ctx.emit(
+            "session/event",
+            event.type,
+            event.payload,
+            session_event=event,
+        )
         if telemetry_plugin is not None:
             telemetry_plugin.projector.process(event)
 
@@ -152,7 +178,7 @@ def _build_default_loop(config: LiveEvalConfig, session: Session) -> AgentLoop:
     if model is None:
         model = "mock" if config.provider == "mock" else default_model(config.provider)
 
-    return AgentLoop(
+    loop = AgentLoop(
         llm=_resolve_llm(config, session),
         tools=ctx.tools,
         config=LoopConfig(
@@ -162,6 +188,7 @@ def _build_default_loop(config: LiveEvalConfig, session: Session) -> AgentLoop:
         ),
         event_sink=event_sink,
     )
+    return loop, ctx
 
 
 def _build_loop_from_runtime(
@@ -181,6 +208,8 @@ def _build_loop_from_runtime(
             event.payload,
             session_event=event,
         )
+        if telemetry_plugin is not None:
+            telemetry_plugin.projector.process(event)
 
     model = config.model
     if model is None:
