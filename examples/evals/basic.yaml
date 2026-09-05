@@ -1,0 +1,13 @@
+# Offline eval suite — weather tool regression case
+name: basic
+evaluators:
+  - stop_reason
+  - tool_lifecycle
+  - event_integrity
+cases:
+  - id: weather-001
+    session_file: ../../tests/fixtures/evals/weather-001.jsonl
+    expected:
+      required_tools:
+        - weather
+      stop_reason: completed

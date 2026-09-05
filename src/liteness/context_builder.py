@@ -23,8 +23,11 @@ class ContextBuilder:
         *,
         tools: list[ToolSchema],
         memory_snapshot: list[dict] | None = None,
+        system_prompt: str | None = None,
     ) -> BuiltContext:
         messages = session.derive_messages()
+        if system_prompt:
+            messages = [Message(role="system", content=system_prompt), *messages]
         token_estimate = sum(len(m.content) for m in messages)
         return BuiltContext(
             messages=messages,

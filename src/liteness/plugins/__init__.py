@@ -10,6 +10,7 @@ from liteness.plugins.memory import MemoryPlugin
 from liteness.plugins.rag import RAGPlugin
 from liteness.plugins.telemetry import TelemetryPlugin
 from liteness.plugins.terminal import TerminalPlugin
+from liteness.plugins.video import VideoPlugin
 
 _BUILTIN_FACTORIES: dict[str, Callable[[], Plugin]] = {
     "filesystem": FilesystemPlugin,
@@ -17,6 +18,7 @@ _BUILTIN_FACTORIES: dict[str, Callable[[], Plugin]] = {
     "memory": MemoryPlugin,
     "rag": RAGPlugin,
     "telemetry": TelemetryPlugin,
+    "video": VideoPlugin,
 }
 
 

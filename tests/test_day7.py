@@ -23,9 +23,13 @@ from liteness.testing import registry_with_plugins
 def test_load_builtin_presets() -> None:
     researcher = load_preset("researcher")
     coder = load_preset("coder")
+    video_editor = load_preset("video_editor")
     assert researcher.name == "researcher"
     assert [p.name for p in researcher.plugins] == ["memory", "rag"]
     assert [p.name for p in coder.plugins] == ["filesystem", "terminal"]
+    assert video_editor.name == "video_editor"
+    assert [p.name for p in video_editor.plugins] == ["filesystem", "video"]
+    assert video_editor.system_prompt is not None
 
 
 def test_plugin_install_registers_tools() -> None:

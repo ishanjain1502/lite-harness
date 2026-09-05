@@ -1,0 +1,13 @@
+# Live eval suite — mock LLM reads README via read_file tool
+name: live-readme
+evaluators:
+  - stop_reason
+  - tool_lifecycle
+  - event_integrity
+cases:
+  - id: readme-001
+    input: "Read the README and summarize what this project does."
+    expected:
+      required_tools:
+        - read_file
+      stop_reason: completed

@@ -1,0 +1,17 @@
+{
+  "baseline_id": "basic-v1",
+  "agent_version": "0.1.0",
+  "dataset": "basic",
+  "metrics": {
+    "task_success": 1.0,
+    "tool_usage": 1.0
+  },
+  "cases": {
+    "weather-001": {
+      "metrics": {
+        "task_success": 1.0,
+        "steps": 2
+      }
+    }
+  }
+}

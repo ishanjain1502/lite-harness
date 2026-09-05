@@ -1,0 +1,373 @@
+"""Interactive REPL for liteness — one live session across prompts."""
+
+from __future__ import annotations
+
+import shlex
+import signal
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from liteness.harness import HarnessRuntime, create_runtime, dispose_runtime
+from liteness.loop import AgentLoop
+from liteness.providers import default_model
+from liteness.session import Session
+from liteness.types import CancelToken, CancelledError
+from liteness.eval.errors import EvalCaseError
+from liteness.eval.models import EvalCase, EvalSuite
+
+
+@dataclass
+class ReplConfig:
+    preset: str | None
+    provider: str
+    model: str | None
+    project_id: str
+    max_steps: int
+    session_file: str | None
+    readme: str
+    telemetry: bool
+    verbose: bool
+    eval_file: str | None = None
+    # NOTE: keep ReplConfig matching the task brief exactly.
+    # replay is injected into the argparse.Namespace when building the loop.
+
+
+_QUIT_COMMANDS = {":q", ":quit", ":exit"}
+
+
+def _make_stream_writer(output_fn: Callable[[str], None]) -> Callable[[str], None]:
+    """Write streaming chunks inline; default print() would add a newline per call."""
+    if output_fn is print:
+
+        def _write(text: str) -> None:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+        return _write
+    return output_fn
+
+
+def _format_size(content: str) -> str:
+    size = len(content.encode("utf-8"))
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
+class _QuitRepl(Exception):
+    """Internal control-flow signal for :q commands."""
+
+class ReplSession:
+    def __init__(
+        self,
+        config: ReplConfig,
+        *,
+        input_fn: Callable[..., str] = input,
+        output_fn: Callable[[str], None] = print,
+    ) -> None:
+        self.config = config
+        self._input = input_fn
+        self._out = output_fn
+        self._stream = _make_stream_writer(output_fn)
+        self.session: Session | None = None
+        self.runtime: HarnessRuntime | None = None
+        self.loop: AgentLoop | None = None
+        self._current_cancel = None
+
+    def run(self) -> int:
+        if self.session is None:
+            self.session = self._open_session()
+        if self.runtime is None:
+            try:
+                self.runtime = self._build_runtime()
+            except Exception as exc:
+                self._out(f"Error: {exc}")
+                return 1
+        if self.loop is None:
+            try:
+                self.loop = self._build_loop()
+            except Exception as exc:
+                self._out(f"Error: {exc}")
+                if self.runtime is not None:
+                    dispose_runtime(self.runtime)
+                    self.runtime = None
+                return 1
+        self._print_banner()
+        return self._read_loop()
+
+    def _open_session(self) -> Session:
+        if self.config.session_file:
+            return Session.open(self.config.session_file)
+        return Session()
+
+    def _build_runtime(self) -> HarnessRuntime | None:
+        if not self.config.preset:
+            return None
+        return create_runtime(
+            preset_name=self.config.preset,
+            session=self.session,  # type: ignore[arg-type]
+            project_id=self.config.project_id,
+        )
+
+    def _build_loop(self, *, runtime: HarnessRuntime | None = None) -> AgentLoop:
+        import argparse
+        from liteness.cli import _build_loop as cli_build_loop
+
+        args = argparse.Namespace(replay=False, **self.config.__dict__)
+        return cli_build_loop(
+            args,
+            self.session,
+            runtime=self.runtime if runtime is None else runtime,
+        )
+
+    def _print_banner(self) -> None:
+        model = self.config.model or default_model(self.config.provider)
+        tools = self.loop.tools.names() if self.loop else []
+        self._out("liteness repl")
+        self._out(f"  preset:    {self.config.preset or '(none)'}")
+        self._out(f"  provider: {self.config.provider} / {model}")
+        self._out(f"  tools:     {', '.join(tools) if tools else '(none)'}")
+        self._out(f"  session:   {self.session.session_id}")  # type: ignore[union-attr]
+        self._out("  commands:  :q :tools :history :reset :preset <name> :report eval")
+
+    def _read_loop(self) -> int:
+        while True:
+            try:
+                line = self._input("you> ")
+            except EOFError:
+                self._dispose()
+                return 0
+            except KeyboardInterrupt:
+                self._out("")
+                continue
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith(":") or stripped == "eval" or stripped.startswith("eval "):
+                try:
+                    self._handle_command(stripped)
+                except _QuitRepl:
+                    self._dispose()
+                    return 0
+                continue
+            self._run_turn(stripped)
+
+    def _run_turn(self, prompt: str) -> None:
+        cancel = CancelToken()
+        self._current_cancel = cancel
+        self._out(f"you> {prompt}")
+        streamed: list[str] = []
+
+        loop = self.loop
+        if loop is None:
+            self._out("Error: no loop configured")
+            self._current_cancel = None
+            return
+
+        prev_sink = loop.event_sink
+
+        def event_sink(event) -> None:
+            if prev_sink is not None:
+                prev_sink(event)
+            self._on_event(event, streamed)
+
+        prev_sigint = signal.getsignal(signal.SIGINT)
+
+        def _on_sigint(*_args) -> None:
+            cancel.cancel()
+
+        try:
+            signal.signal(signal.SIGINT, _on_sigint)
+            loop.event_sink = event_sink
+            try:
+                result = loop.run_turn(self.session, prompt, cancel=cancel)  # type: ignore[arg-type]
+            except CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — keep the REPL alive
+                if streamed:
+                    self._out("")
+                self._out(f"[unexpected error: {exc}]")
+                return
+        finally:
+            signal.signal(signal.SIGINT, prev_sigint)
+            loop.event_sink = prev_sink
+            self._current_cancel = None
+
+        if streamed:
+            self._out("")
+        if result.final_output and result.final_output not in "".join(streamed):
+            self._out(result.final_output)
+        self._out(f"[turn {result.turn} · {result.status} · {result.stop_reason.value} · {result.steps_run} steps]")
+
+    def _on_event(self, event, streamed: list[str]) -> None:
+        if event.type == "assistant/chunk":
+            delta = event.payload.get("content_delta") or ""
+            if delta:
+                self._stream(delta)
+                streamed.append(delta)
+            for d in event.payload.get("tool_call_deltas") or []:
+                name = d.get("name")
+                if name:
+                    self._out(f"\n-> tool: {name}")
+        elif event.type == "tool/result":
+            content = event.payload.get("content", "")
+            if event.payload.get("is_error"):
+                self._out(f"-> error: {content[:80]}")
+            else:
+                self._out(f"-> result: {_format_size(content)}")
+
+    def _dispose(self) -> None:
+        if self.runtime is not None:
+            dispose_runtime(self.runtime)
+            self.runtime = None
+    def _handle_command(self, line: str) -> bool:
+        if line == "eval" or line.startswith("eval "):
+            self._do_eval(line)
+            return True
+
+        parts = line.split(maxsplit=1)
+        cmd = parts[0]
+        arg = parts[1].strip() if len(parts) > 1 else None
+
+        if cmd in _QUIT_COMMANDS:
+            raise _QuitRepl()
+
+        if cmd == ":tools":
+            names = self.loop.tools.names() if self.loop else []
+            self._out(", ".join(names) if names else "(no tools)")
+            return True
+
+        if cmd == ":history":
+            for e in self.session.events:  # type: ignore[union-attr]
+                self._out(f"  [{e.type}] turn={e.turn} step={e.step}")
+            return True
+
+        if cmd == ":report":
+            from liteness.telemetry.projector import format_trace_report, project_events
+
+            self._out(format_trace_report(project_events(self.session.events)))  # type: ignore[arg-type]
+            return True
+
+        if cmd == ":reset":
+            self._do_reset()
+            return True
+
+        if cmd == ":preset":
+            if not arg:
+                self._out("usage: :preset <name>")
+                return True
+            self._do_preset(arg)
+            return True
+
+        if cmd == ":eval":
+            self._do_eval("eval" if not arg else f"eval {arg}")
+            return True
+
+        self._out(f"unknown command: {line}")
+        return False
+
+    def _do_eval(self, line: str) -> None:
+        from liteness.eval.dataset import load_suite
+        from liteness.eval.errors import EvalError
+        from liteness.eval.report import build_eval_report, format_eval_report
+        from liteness.eval.runner import EvalRunner
+
+        try:
+            tokens = shlex.split(line)
+        except ValueError as exc:
+            self._out(f"eval error: {exc}")
+            return
+
+        case_id: str | None = None
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--case":
+                if index + 1 >= len(tokens):
+                    self._out("usage: eval [--case <id>]")
+                    return
+                case_id = tokens[index + 1]
+                index += 2
+                continue
+            self._out("usage: eval [--case <id>]")
+            return
+
+        session = self.session
+        if session is None or not session.events:
+            self._out("no session events to evaluate")
+            return
+
+        try:
+            if self.config.eval_file:
+                suite = load_suite(self.config.eval_file)
+                case = _resolve_repl_eval_case(suite, case_id)
+            else:
+                if case_id is not None:
+                    self._out("eval --case requires --eval-file on repl startup")
+                    return
+                case = EvalCase(id="repl-session")
+                suite = EvalSuite(
+                    name="repl",
+                    cases=[case],
+                    evaluators=["stop_reason", "tool_lifecycle", "event_integrity"],
+                )
+
+            case_result = EvalRunner().evaluate_session(
+                suite,
+                case,
+                session,
+                session_path=session.log_path,
+            )
+            report = build_eval_report(suite, [case_result], dataset=suite.name)
+        except EvalError as exc:
+            self._out(f"eval error: {exc}")
+            return
+
+        self._out(format_eval_report(report, verbose=self.config.verbose).rstrip())
+
+    def _do_reset(self) -> None:
+        session = self.session  # type: ignore[assignment]
+        session.events.clear()
+        session._turn = 0
+        session._step = 0
+        if session.log_path is not None:
+            session.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with session.log_path.open("w", encoding="utf-8") as handle:
+                handle.truncate(0)
+                handle.flush()
+                import os
+                os.fsync(handle.fileno())
+        self._out(f"session reset (id: {session.session_id} retained)")
+
+    def _do_preset(self, name: str) -> None:
+        old_runtime = self.runtime
+        new_runtime = None
+        try:
+            new_runtime = create_runtime(
+                preset_name=name,
+                session=self.session,  # type: ignore[arg-type]
+                project_id=self.config.project_id,
+            )
+            new_loop = self._build_loop(runtime=new_runtime)
+        except Exception as exc:
+            if new_runtime is not None:
+                dispose_runtime(new_runtime)
+            self._out(f"Error switching preset: {exc}")
+            return
+        self.runtime = new_runtime
+        self.loop = new_loop
+        if old_runtime is not None:
+            dispose_runtime(old_runtime)
+        tools = self.loop.tools.names() if self.loop else []
+        self._out(f"switched to preset: {name} (tools: {', '.join(tools)})")
+
+
+def _resolve_repl_eval_case(suite: EvalSuite, case_id: str | None) -> EvalCase:
+    if case_id is not None:
+        matches = [case for case in suite.cases if case.id == case_id]
+        if not matches:
+            raise EvalCaseError(f"case not found in suite: {case_id}")
+        return matches[0]
+    if len(suite.cases) == 1:
+        return suite.cases[0]
+    raise EvalCaseError("eval --case <id> required when suite has multiple cases")

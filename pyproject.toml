@@ -25,3 +25,7 @@ packages = ["src/liteness"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "eval: offline eval tests (fast tier)",
+    "eval_live: live agent + eval regression tests (slow tier)",
+]

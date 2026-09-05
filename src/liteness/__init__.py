@@ -11,6 +11,7 @@ from liteness.session import (
     recover_orphans,
 )
 from liteness.types import CancelToken, LlmError, StopReason
+from liteness.repl import ReplConfig, ReplSession
 
 __all__ = [
     "Agent",
@@ -26,4 +27,6 @@ __all__ = [
     "TurnResult",
     "find_orphan_tool_calls",
     "recover_orphans",
+    "ReplConfig",
+    "ReplSession",
 ]

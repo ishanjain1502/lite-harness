@@ -1,0 +1,15 @@
+{
+  "baseline_id": "live-readme-v1",
+  "agent_version": "0.1.0",
+  "dataset": "live-readme",
+  "metrics": {
+    "task_success": 1.0
+  },
+  "cases": {
+    "readme-001": {
+      "metrics": {
+        "task_success": 1.0
+      }
+    }
+  }
+}
