@@ -48,6 +48,7 @@ class ClickHouseExporter:
         self._stopping = False
         self._degraded = False
         self._degraded_emitted = False
+        self._draining_spill = False
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
         self._drain_spill()
@@ -111,11 +112,11 @@ class ClickHouseExporter:
 
     def _worker_loop(self) -> None:
         while True:
-            if self._stopping:
-                break
             try:
                 first = self._queue.get(timeout=self.flush_interval_s)
             except queue.Empty:
+                if self._stopping:
+                    break
                 continue
             if first is _SENTINEL:
                 break
@@ -124,8 +125,6 @@ class ClickHouseExporter:
             deadline = time.monotonic() + self.flush_interval_s
 
             while len(batch) < self.batch_size:
-                if self._stopping:
-                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -140,9 +139,6 @@ class ClickHouseExporter:
 
             self._flush_collected(batch)
 
-            if self._stopping:
-                break
-
     def _flush_collected(self, items: list[tuple[str, dict[str, Any]]]) -> None:
         by_table: dict[str, list[dict[str, Any]]] = {}
         for table, row in items:
@@ -151,18 +147,11 @@ class ClickHouseExporter:
             self._flush_batch(table, rows)
 
     def _flush_batch(self, table: str, rows: list[dict[str, Any]]) -> None:
-        if self._stopping:
-            for row in rows:
-                try:
-                    self._spill(table, row)
-                except Exception:
-                    logger.exception("failed to spill row during shutdown flush")
-            return
-
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
                 self.client.insert_rows(table, rows)
+                self._drain_spill()
                 return
             except Exception as exc:
                 last_exc = exc
@@ -224,35 +213,39 @@ class ClickHouseExporter:
             logger.exception("failed to spill ClickHouse row to %s", self.spill_path)
 
     def _drain_spill(self) -> None:
-        if not self.spill_path.exists():
+        if self._draining_spill or not self.spill_path.exists():
             return
+        self._draining_spill = True
         try:
-            lines = self.spill_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return
-        if not lines:
-            return
-
-        by_table: dict[str, list[dict[str, Any]]] = {}
-        for line in lines:
-            if not line.strip():
-                continue
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                return
-            by_table.setdefault(entry["table"], []).append(entry["row"])
-
-        try:
-            for table, rows in by_table.items():
-                self.client.insert_rows(table, rows)
-        except Exception:
-            return
-
-        try:
-            self.spill_path.unlink()
-        except OSError:
-            try:
-                self.spill_path.write_text("", encoding="utf-8")
+                lines = self.spill_path.read_text(encoding="utf-8").splitlines()
             except OSError:
-                pass
+                return
+            if not lines:
+                return
+
+            by_table: dict[str, list[dict[str, Any]]] = {}
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    return
+                by_table.setdefault(entry["table"], []).append(entry["row"])
+
+            try:
+                for table, rows in by_table.items():
+                    self.client.insert_rows(table, rows)
+            except Exception:
+                return
+
+            try:
+                self.spill_path.unlink()
+            except OSError:
+                try:
+                    self.spill_path.write_text("", encoding="utf-8")
+                except OSError:
+                    pass
+        finally:
+            self._draining_spill = False

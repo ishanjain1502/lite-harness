@@ -37,12 +37,6 @@ class ClickHousePlugin:
         if client is None:
             client = HttpClickHouseClient(url=url, database=database)
         projector = ClickHouseProjector(mode=mode)
-        self.exporter = ClickHouseExporter(
-            client,
-            spill_path=spill_path,
-            projector=projector,
-            flush_interval_s=float(config.get("flush_interval_s", 0.2)),
-        )
         try:
             client.ensure_schema()
         except Exception:
@@ -50,6 +44,12 @@ class ClickHousePlugin:
                 "ClickHouse schema ensure failed; continuing with spill",
                 exc_info=True,
             )
+        self.exporter = ClickHouseExporter(
+            client,
+            spill_path=spill_path,
+            projector=projector,
+            flush_interval_s=float(config.get("flush_interval_s", 0.2)),
+        )
 
         plugin = self
 

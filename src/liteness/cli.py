@@ -226,7 +226,18 @@ def run_command(args: argparse.Namespace) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-    loop = _build_loop(args, session, runtime=runtime, local_cleanup=local_cleanup)
+    try:
+        loop = _build_loop(
+            args, session, runtime=runtime, local_cleanup=local_cleanup
+        )
+    except PluginConfigError as exc:
+        if runtime is not None:
+            dispose_runtime(runtime)
+        else:
+            for ctx, plugin in local_cleanup:
+                plugin.uninstall(ctx)
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         result = loop.run_turn(session, args.prompt)
@@ -411,14 +422,16 @@ def export_clickhouse_command(args: argparse.Namespace) -> int:
     session = Session.load_from_jsonl(args.session_file, recover=False)
     exporter = _make_clickhouse_exporter(config)
     projector = exporter.projector
+    projected_count = 0
     try:
         for event in session.events:
             row = projector.project_event(event)
             if row is not None:
                 exporter.emit_session(row)
+                projected_count += 1
     finally:
         exporter.shutdown(session_id=session.session_id)
-    print(f"Exported {len(session.events)} events from {args.session_file}")
+    print(f"Exported {projected_count} events from {args.session_file}")
     return 0
 
 
@@ -460,7 +473,11 @@ def _export_eval_report(args: argparse.Namespace, report) -> None:
                 eval_rows.append(row.to_insert_dict())
         if eval_rows:
             # Sync insert: eval_results must land before shutdown would spill small batches.
-            exporter.client.insert_rows("eval_results", eval_rows)
+            try:
+                exporter.client.insert_rows("eval_results", eval_rows)
+            except Exception:
+                for row in eval_rows:
+                    exporter._spill("eval_results", row)
     finally:
         exporter.shutdown()
 

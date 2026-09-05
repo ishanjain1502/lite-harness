@@ -155,10 +155,8 @@ def _mock_for_readme_task(readme_path: str = "README.md") -> MockLLMProvider:
 def _build_default_loop(config: LiveEvalConfig, session: Session) -> tuple[AgentLoop, Context]:
     ctx = Context()
     FilesystemPlugin().install(ctx, {})
-    telemetry_plugin: TelemetryPlugin | None = None
     if config.telemetry:
-        telemetry_plugin = TelemetryPlugin()
-        telemetry_plugin.install(ctx, {})
+        TelemetryPlugin().install(ctx, {})
     if config.clickhouse is not None:
         from liteness.plugins.clickhouse import ClickHousePlugin
 
@@ -171,8 +169,6 @@ def _build_default_loop(config: LiveEvalConfig, session: Session) -> tuple[Agent
             event.payload,
             session_event=event,
         )
-        if telemetry_plugin is not None:
-            telemetry_plugin.projector.process(event)
 
     model = config.model
     if model is None:
@@ -208,8 +204,6 @@ def _build_loop_from_runtime(
             event.payload,
             session_event=event,
         )
-        if telemetry_plugin is not None:
-            telemetry_plugin.projector.process(event)
 
     model = config.model
     if model is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +62,32 @@ def test_clickhouse_down_spills(tmp_path: Path) -> None:
     assert line["row"]["event_id"] == "e1"
 
 
+def test_shutdown_inserts_all_queued_session_events(tmp_path: Path) -> None:
+    client = FakeClickHouseClient()
+    spill = tmp_path / "spill.jsonl"
+    exporter = ClickHouseExporter(
+        client,
+        spill_path=spill,
+        projector=ClickHouseProjector(),
+        flush_interval_s=10.0,
+        batch_size=100,
+    )
+    event_ids = {f"e{index}" for index in range(10)}
+    for event_id in event_ids:
+        exporter.emit("session_events", {"event_id": event_id})
+
+    exporter.shutdown(session_id="s1")
+
+    inserted_event_ids = {
+        row.get("event_id")
+        for table, rows in client.calls
+        if table == "session_events"
+        for row in rows
+    }
+    assert event_ids <= inserted_event_ids
+    assert not spill.exists() or not spill.read_text(encoding="utf-8").strip()
+
+
 def test_dedupe_event_id(tmp_path: Path) -> None:
     projector = ClickHouseProjector()
     event = _event()
@@ -108,14 +135,23 @@ def test_emit_never_raises_when_spill_fails(tmp_path: Path) -> None:
 
 
 def test_emit_never_raises_on_unserializable_row(tmp_path: Path, monkeypatch) -> None:
-    client = FakeClickHouseClient()
+    insert_started = threading.Event()
+    release_insert = threading.Event()
+
+    class BlockingClient(FakeClickHouseClient):
+        def insert_rows(self, table, rows):
+            insert_started.set()
+            release_insert.wait(timeout=2.0)
+            super().insert_rows(table, rows)
+
+    client = BlockingClient()
     exporter = ClickHouseExporter(
         client,
         spill_path=tmp_path / "spill.jsonl",
         projector=ClickHouseProjector(),
-        queue_maxsize=0,
-        flush_interval_s=10.0,
-        batch_size=100,
+        queue_maxsize=1,
+        flush_interval_s=0.01,
+        batch_size=1,
     )
     original_dumps = json.dumps
 
@@ -127,8 +163,47 @@ def test_emit_never_raises_on_unserializable_row(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(
         "liteness.clickhouse.exporter.json.dumps", _fail_spill_dumps
     )
+    exporter.emit("session_events", {"first": "blocks worker"})
+    assert insert_started.wait(timeout=1.0)
+    exporter.emit("session_events", {"second": "fills queue"})
     exporter.emit("session_events", {"bad": "value"})
-    exporter.shutdown()
+    release_insert.set()
+    exporter.shutdown(timeout_s=1.0)
+
+
+def test_successful_insert_drains_existing_spill(tmp_path: Path) -> None:
+    spill = tmp_path / "spill.jsonl"
+    spill.write_text(
+        json.dumps(
+            {
+                "table": "session_events",
+                "row": {"event_id": "spilled-e1"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = FakeClickHouseClient(fail_with=RuntimeError("initially down"))
+    exporter = ClickHouseExporter(
+        client,
+        spill_path=spill,
+        projector=ClickHouseProjector(),
+        max_retries=1,
+        flush_interval_s=0.01,
+    )
+    client.fail_with = None
+
+    exporter.emit("session_events", {"event_id": "live-e1"})
+    exporter.shutdown(session_id="s1")
+
+    inserted_event_ids = {
+        row.get("event_id")
+        for table, rows in client.calls
+        if table == "session_events"
+        for row in rows
+    }
+    assert {"live-e1", "spilled-e1"} <= inserted_event_ids
+    assert not spill.exists()
 
 
 def test_flush_window_not_reset_by_steady_stream(tmp_path: Path) -> None:

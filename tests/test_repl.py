@@ -68,6 +68,37 @@ def test_repl_quit_disposes_injected_runtime(monkeypatch: pytest.MonkeyPatch) ->
     assert repl.runtime is None
 
 
+def test_repl_quit_uninstalls_local_clickhouse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from liteness.clickhouse.client import FakeClickHouseClient
+    from liteness.plugins.clickhouse import ClickHousePlugin
+
+    client = FakeClickHouseClient()
+    original_install = ClickHousePlugin.install
+
+    def install(self, ctx, config):
+        config = dict(config)
+        config["client"] = client
+        config["spill_path"] = str(tmp_path / "spill.jsonl")
+        config["flush_interval_s"] = 0.01
+        return original_install(self, ctx, config)
+
+    monkeypatch.setattr(ClickHousePlugin, "install", install)
+    repl = ReplSession(
+        _config(clickhouse=True),
+        input_fn=_iter_input([":q"]),
+        output_fn=lambda _: None,
+    )
+
+    assert repl.run() == 0
+    assert any(
+        table == "session_events"
+        and any(row.get("event_type") == "ops/shutdown" for row in rows)
+        for table, rows in client.calls
+    )
+
+
 def test_repl_run_preserves_injected_components(monkeypatch: pytest.MonkeyPatch) -> None:
     session = Session()
     runtime = object()

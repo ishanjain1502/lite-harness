@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,5 +41,55 @@ def test_plugin_exports_session_event(tmp_path: Path) -> None:
     )
     ctx.emit("session/event", event.type, event.payload, session_event=event)
     plugin.uninstall(ctx)
-    tables = [table for table, _ in client.calls]
-    assert "session_events" in tables
+    event_ids = {
+        row["event_id"]
+        for table, rows in client.calls
+        if table == "session_events"
+        for row in rows
+    }
+    assert "e9" in event_ids
+
+
+def test_plugin_ensures_schema_before_exporter_drains_spill(tmp_path: Path) -> None:
+    class SchemaAwareClient(FakeClickHouseClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.schema_ready = False
+
+        def ensure_schema(self) -> None:
+            self.schema_ready = True
+
+        def insert_rows(self, table, rows) -> None:
+            if not self.schema_ready:
+                raise RuntimeError("schema missing")
+            super().insert_rows(table, rows)
+
+    spill = tmp_path / "spill.jsonl"
+    spill.write_text(
+        json.dumps(
+            {
+                "table": "session_events",
+                "row": {"event_id": "spilled-before-install"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = SchemaAwareClient()
+    plugin = ClickHousePlugin()
+    ctx = Context()
+
+    plugin.install(
+        ctx,
+        {"client": client, "spill_path": str(spill), "flush_interval_s": 0.01},
+    )
+    plugin.uninstall(ctx)
+
+    event_ids = {
+        row["event_id"]
+        for table, rows in client.calls
+        if table == "session_events"
+        for row in rows
+    }
+    assert "spilled-before-install" in event_ids
+    assert not spill.exists()

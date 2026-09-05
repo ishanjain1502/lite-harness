@@ -77,6 +77,7 @@ class ReplSession:
         self.runtime: HarnessRuntime | None = None
         self.loop: AgentLoop | None = None
         self._current_cancel = None
+        self._local_cleanup: list = []
 
     def run(self) -> int:
         if self.session is None:
@@ -95,6 +96,7 @@ class ReplSession:
                 if self.runtime is not None:
                     dispose_runtime(self.runtime)
                     self.runtime = None
+                self._dispose_local_cleanup()
                 return 1
         self._print_banner()
         return self._read_loop()
@@ -140,6 +142,7 @@ class ReplSession:
             args,
             self.session,
             runtime=self.runtime if runtime is None else runtime,
+            local_cleanup=self._local_cleanup,
         )
 
     def _print_banner(self) -> None:
@@ -242,6 +245,13 @@ class ReplSession:
         if self.runtime is not None:
             dispose_runtime(self.runtime)
             self.runtime = None
+        self._dispose_local_cleanup()
+
+    def _dispose_local_cleanup(self) -> None:
+        for ctx, plugin in self._local_cleanup:
+            plugin.uninstall(ctx)
+        self._local_cleanup.clear()
+
     def _handle_command(self, line: str) -> bool:
         if line == "eval" or line.startswith("eval "):
             self._do_eval(line)
@@ -380,6 +390,8 @@ class ReplSession:
         self.loop = new_loop
         if old_runtime is not None:
             dispose_runtime(old_runtime)
+        else:
+            self._dispose_local_cleanup()
         tools = self.loop.tools.names() if self.loop else []
         self._out(f"switched to preset: {name} (tools: {', '.join(tools)})")
 
