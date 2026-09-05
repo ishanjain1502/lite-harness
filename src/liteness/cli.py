@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -373,6 +374,49 @@ def export_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _make_clickhouse_exporter(config: dict[str, Any]):
+    from liteness.clickhouse.client import HttpClickHouseClient
+    from liteness.clickhouse.exporter import ClickHouseExporter
+    from liteness.clickhouse.projector import ClickHouseProjector
+
+    client = config.get("client") or HttpClickHouseClient(
+        url=config["url"], database=config["database"]
+    )
+    try:
+        client.ensure_schema()
+    except Exception:
+        logging.getLogger("liteness.clickhouse").warning(
+            "schema ensure failed", exc_info=True
+        )
+    return ClickHouseExporter(
+        client,
+        spill_path=Path(config.get("spill_path") or ".liteness/clickhouse-spill.jsonl"),
+        projector=ClickHouseProjector(mode=config.get("mode", "redacted")),
+    )
+
+
+def export_clickhouse_command(args: argparse.Namespace) -> int:
+    config = {
+        "url": args.clickhouse_url
+        or os.environ.get("LITENESS_CLICKHOUSE_URL")
+        or "http://localhost:8123",
+        "database": args.clickhouse_database,
+        "mode": "full" if args.full else "redacted",
+    }
+    session = Session.load_from_jsonl(args.session_file, recover=False)
+    exporter = _make_clickhouse_exporter(config)
+    projector = exporter.projector
+    try:
+        for event in session.events:
+            row = projector.project_event(event)
+            if row is not None:
+                exporter.emit_session(row)
+    finally:
+        exporter.shutdown(session_id=session.session_id)
+    print(f"Exported {len(session.events)} events from {args.session_file}")
+    return 0
+
+
 def _finish_eval_command(args: argparse.Namespace, report) -> int:
     if args.baseline:
         try:
@@ -594,6 +638,19 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("session_file", help="Source JSONL session log")
     export_parser.add_argument("output", help="Destination JSONL path")
     export_parser.set_defaults(func=export_command)
+
+    export_ch_parser = sub.add_parser(
+        "export-clickhouse", help="Backfill session JSONL into ClickHouse"
+    )
+    export_ch_parser.add_argument("session_file", help="JSONL session log path")
+    export_ch_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Export with raw payloads (default: redacted)",
+    )
+    export_ch_parser.add_argument("--clickhouse-url", default=None, help="ClickHouse HTTP URL")
+    export_ch_parser.add_argument("--clickhouse-database", default="liteness")
+    export_ch_parser.set_defaults(func=export_clickhouse_command)
 
     eval_parser = sub.add_parser("eval", help="Evaluate recorded agent sessions")
     eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True)
