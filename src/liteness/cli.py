@@ -106,18 +106,35 @@ def _resolve_session(args: argparse.Namespace) -> Session:
     return Session()
 
 
-def _add_clickhouse_flags(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--clickhouse",
-        action="store_true",
-        help="Export events to ClickHouse (redacted)",
-    )
-    group.add_argument(
-        "--clickhouse-full",
-        action="store_true",
-        help="Export events to ClickHouse with raw payloads",
-    )
+def _add_clickhouse_flags(
+    parser: argparse.ArgumentParser,
+    *,
+    repl_defaults: bool = False,
+) -> None:
+    if repl_defaults:
+        parser.add_argument(
+            "--clickhouse",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Export events to ClickHouse (default: on for repl)",
+        )
+        parser.add_argument(
+            "--clickhouse-full",
+            action="store_true",
+            help="Export events to ClickHouse with raw payloads",
+        )
+    else:
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(
+            "--clickhouse",
+            action="store_true",
+            help="Export events to ClickHouse (redacted)",
+        )
+        group.add_argument(
+            "--clickhouse-full",
+            action="store_true",
+            help="Export events to ClickHouse with raw payloads",
+        )
     parser.add_argument("--clickhouse-url", default=None, help="ClickHouse HTTP URL")
     parser.add_argument("--clickhouse-database", default="liteness")
 
@@ -135,6 +152,8 @@ def _clickhouse_config_from_args(args: argparse.Namespace) -> dict[str, Any] | N
         "url": url,
         "database": getattr(args, "clickhouse_database", "liteness") or "liteness",
         "mode": mode,
+        "user": os.environ.get("LITENESS_CLICKHOUSE_USER"),
+        "password": os.environ.get("LITENESS_CLICKHOUSE_PASSWORD"),
     }
 
 
@@ -294,6 +313,19 @@ def _build_runtime(args: argparse.Namespace, session: Session) -> HarnessRuntime
 
 
 def repl_command(args: argparse.Namespace) -> int:
+    if args.clickhouse or args.clickhouse_full:
+        from liteness.clickhouse.docker import ensure_clickhouse_running
+
+        ensure_clickhouse_running(
+            url=(
+                args.clickhouse_url
+                or os.environ.get("LITENESS_CLICKHOUSE_URL")
+                or "http://localhost:8123"
+            ),
+            user=os.environ.get("LITENESS_CLICKHOUSE_USER"),
+            password=os.environ.get("LITENESS_CLICKHOUSE_PASSWORD"),
+        )
+
     config = ReplConfig(
         preset=args.preset,
         provider=args.provider,
@@ -393,12 +425,19 @@ def export_command(args: argparse.Namespace) -> int:
 
 
 def _make_clickhouse_exporter(config: dict[str, Any]):
-    from liteness.clickhouse.client import HttpClickHouseClient
+    from liteness.clickhouse.client import (
+        HttpClickHouseClient,
+        clickhouse_credentials_from_config,
+    )
     from liteness.clickhouse.exporter import ClickHouseExporter
     from liteness.clickhouse.projector import ClickHouseProjector
 
+    user, password = clickhouse_credentials_from_config(config)
     client = config.get("client") or HttpClickHouseClient(
-        url=config["url"], database=config["database"]
+        url=config["url"],
+        database=config["database"],
+        user=user,
+        password=password,
     )
     try:
         client.ensure_schema()
@@ -420,6 +459,8 @@ def export_clickhouse_command(args: argparse.Namespace) -> int:
         or "http://localhost:8123",
         "database": args.clickhouse_database,
         "mode": "full" if args.full else "redacted",
+        "user": os.environ.get("LITENESS_CLICKHOUSE_USER"),
+        "password": os.environ.get("LITENESS_CLICKHOUSE_PASSWORD"),
     }
     session = Session.load_from_jsonl(args.session_file, recover=False)
     exporter = _make_clickhouse_exporter(config)
@@ -685,7 +726,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Show tool calls, result sizes, streaming chunks, and turn summary",
     )
     repl_parser.add_argument("-v", "--verbose", action="store_true")
-    _add_clickhouse_flags(repl_parser)
+    _add_clickhouse_flags(repl_parser, repl_defaults=True)
     repl_parser.set_defaults(func=repl_command)
 
     report_parser = sub.add_parser("report", help="Build telemetry report from session JSONL")

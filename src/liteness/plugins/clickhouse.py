@@ -21,7 +21,10 @@ class ClickHousePlugin:
         self._session_id = ""
 
     def install(self, ctx: Context, config: dict[str, Any]) -> None:
-        from liteness.clickhouse.client import HttpClickHouseClient
+        from liteness.clickhouse.client import (
+            HttpClickHouseClient,
+            clickhouse_credentials_from_config,
+        )
         from liteness.clickhouse.exporter import ClickHouseExporter
         from liteness.clickhouse.projector import ClickHouseProjector
 
@@ -33,9 +36,15 @@ class ClickHousePlugin:
         )
         database = str(config.get("database") or "liteness")
         spill_path = Path(config.get("spill_path") or ".liteness/clickhouse-spill.jsonl")
+        user, password = clickhouse_credentials_from_config(config)
         client = config.get("client")
         if client is None:
-            client = HttpClickHouseClient(url=url, database=database)
+            client = HttpClickHouseClient(
+                url=url,
+                database=database,
+                user=user,
+                password=password,
+            )
         projector = ClickHouseProjector(mode=mode)
         try:
             client.ensure_schema()

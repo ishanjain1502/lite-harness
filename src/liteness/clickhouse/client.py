@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Protocol
 from urllib.parse import quote
 
 from liteness.plugins.base import PluginConfigError
+
+
+def clickhouse_credentials_from_config(
+    config: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve optional HTTP basic-auth credentials from config or environment."""
+    config = config or {}
+    user = config.get("user") or os.environ.get("LITENESS_CLICKHOUSE_USER")
+    password = config.get("password") or os.environ.get("LITENESS_CLICKHOUSE_PASSWORD")
+    if user is not None and not str(user):
+        user = None
+    if password is not None and not str(password):
+        password = None
+    return user, password
 
 CREATE_DATABASE = "CREATE DATABASE IF NOT EXISTS {database}"
 
@@ -88,7 +103,14 @@ class FakeClickHouseClient:
 
 
 class HttpClickHouseClient:
-    def __init__(self, url: str, database: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        database: str,
+        *,
+        user: str | None = None,
+        password: str | None = None,
+    ) -> None:
         try:
             import httpx  # noqa: PLC0415
         except ImportError as exc:
@@ -100,6 +122,13 @@ class HttpClickHouseClient:
         self._httpx = httpx
         self.url = url.rstrip("/")
         self.database = database
+        self.user = user
+        self.password = password
+
+    def _auth(self) -> tuple[str, str] | None:
+        if self.user and self.password:
+            return (self.user, self.password)
+        return None
 
     def ensure_schema(self) -> None:
         statements = [
@@ -124,7 +153,9 @@ class HttpClickHouseClient:
             "&date_time_input_format=best_effort"
         )
         url = f"{self.url}/?{params}"
-        response = self._httpx.post(url, content=body, timeout=5.0)
+        response = self._httpx.post(
+            url, content=body, timeout=5.0, auth=self._auth()
+        )
         if response.status_code < 200 or response.status_code >= 300:
             raise RuntimeError(
                 f"ClickHouse HTTP {response.status_code}: {response.text}"
