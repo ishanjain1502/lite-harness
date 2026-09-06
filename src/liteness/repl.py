@@ -154,6 +154,9 @@ class ReplSession:
         self._out(f"  provider: {self.config.provider} / {model}")
         self._out(f"  tools:     {', '.join(tools) if tools else '(none)'}")
         self._out(f"  session:   {self.session.session_id}")  # type: ignore[union-attr]
+        if self.config.clickhouse or self.config.clickhouse_full:
+            mode = "full" if self.config.clickhouse_full else "redacted"
+            self._out(f"  clickhouse: on ({mode})")
         self._out("  commands:  :q :tools :history :reset :preset <name> :report eval")
 
     def _read_loop(self) -> int:

@@ -6,3 +6,6 @@ services:
       - "9000:9000"
     environment:
       CLICKHOUSE_DB: liteness
+      # Without a password the image disables HTTP access for user `default`.
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: liteness

@@ -17,10 +17,12 @@ liteness run "Read README.md and tell me what this repository does."
 
 ## REPL (interactive)
 
-Keep one live session across prompts, with streaming output and control commands:
+Keep one live session across prompts, with streaming output and control commands.
+ClickHouse export and the local Docker container start automatically (use
+`--no-clickhouse` to disable):
 
 ```bash
-# mock provider, no API key
+# mock provider, no API key — ClickHouse on by default
 liteness repl --provider mock --readme README.md
 
 # live provider with a preset
@@ -126,6 +128,7 @@ Output videos are written to `./video-output/` by default.
 ```bash
 pip install -e ".[clickhouse]"
 docker compose -f docker/clickhouse/docker-compose.yml up -d
+# set LITENESS_CLICKHOUSE_USER/PASSWORD in .env (see .env.example; matches docker-compose)
 liteness run --clickhouse --session-file .sessions/demo.jsonl "Read README.md and summarize."
 # inspect: examples/clickhouse/queries.sql
 liteness export-clickhouse .sessions/demo.jsonl   # backfill (redacted)
