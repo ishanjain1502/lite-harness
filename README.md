@@ -86,9 +86,9 @@ pip install -e ".[all-providers]"
 
 ## Architecture
 
-See `discussionDocs/` for design notes (`init.md` through `day_08.md`).
+See `discussionDocs/` for design notes.
 
-Day 8 adds observability (traces, metrics, CLI report) and control-plane policies (budget, retry):
+Observability (traces, metrics, CLI report) and control-plane policies (budget, retry):
 
 ```
 AgentLoop (control)          TelemetryPlugin (observe)
@@ -97,7 +97,7 @@ AgentLoop (control)          TelemetryPlugin (observe)
 └── CancelToken              └── CLI report
 ```
 
-Day 7 adds plugin composition, presets, memory, and RAG:
+Plugin composition, presets, memory, and RAG:
 
 ```
 Preset → Plugins → Context (tools, events, effect)
@@ -113,7 +113,7 @@ liteness run --preset coder "Read README.md and summarize."
 
 # Researcher: memory + RAG (index docs first)
 liteness index discussionDocs/
-liteness run --preset researcher "What does day_06 say about session recovery?"
+liteness run --preset researcher "What does the design say about session recovery?"
 
 # Video editor: ffmpeg tools + Gemini vision for natural-language edits
 # Requires ffmpeg on PATH and GOOGLE_API_KEY for scene analysis
@@ -142,7 +142,7 @@ Default export redacts message content and tool arguments. Use `--clickhouse-ful
 pytest
 ```
 
-### Durable sessions (Day 6)
+### Durable sessions
 
 ```bash
 # Run with JSONL log (created automatically, fsync per event)
@@ -158,7 +158,7 @@ liteness recover ./sessions/demo.jsonl
 liteness run "continue" --session-file ./sessions/demo.jsonl --replay
 ```
 
-### Observability (Day 8)
+### Observability
 
 ```bash
 # Print trace tree + metrics after a run
