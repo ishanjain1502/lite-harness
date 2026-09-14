@@ -115,13 +115,15 @@ liteness run --preset coder "Read README.md and summarize."
 liteness index discussionDocs/
 liteness run --preset researcher "What does the design say about session recovery?"
 
-# Video editor: ffmpeg tools + Gemini vision for natural-language edits
-# Requires ffmpeg on PATH and GOOGLE_API_KEY for scene analysis
-liteness run --preset video_editor --provider google --max-steps 15 \
-  "Remove the intro from my-video.mp4"
+# Video editor: resolve URLs, plan edits, ffmpeg tools + Gemini vision
+# Requires ffmpeg on PATH; GOOGLE_API_KEY for plan_edits/analyze_video;
+# pip install -e ".[video-download]" for YouTube/HTTP sources
+liteness run --preset video_editor --provider google --max-steps 20 \
+  "Remove the intro from https://youtube.com/watch?v=..."
 ```
 
-Output videos are written to `./video-output/` by default.
+Edited videos are written next to the input as `{name}_edited_{timestamp}.mp4`.
+Downloads and intermediates use `./.liteness-video-temp/`.
 
 ## ClickHouse export (optional)
 
