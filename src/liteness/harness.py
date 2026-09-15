@@ -49,8 +49,6 @@ def _plugin_config(
 
     if spec.name == "video":
         config.setdefault("output_dir", "./video-output")
-        config.setdefault("vision_provider", "google")
-        config.setdefault("vision_model", "gemini-2.0-flash")
 
     return config
 

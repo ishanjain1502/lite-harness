@@ -20,6 +20,34 @@ from liteness.plugins.video_utils import (
 )
 from liteness.tools import ToolResult
 
+# Tried in order when the caller's format fails or is omitted.
+YTDLP_FORMAT_FALLBACKS: tuple[str, ...] = (
+    "bestvideo+bestaudio/best",
+    "bv*+ba/b",
+    "best[ext=mp4]/best",
+    "best",
+    "worst",
+)
+
+_UPGRADE_HINT = (
+    "If YouTube downloads fail with 'format is not available' or only storyboard "
+    "images, upgrade yt-dlp: pip install -U 'lite-ness[video-download]'"
+)
+
+
+class _YtdlpSilentLogger:
+    def debug(self, msg: str) -> None:
+        pass
+
+    def info(self, msg: str) -> None:
+        pass
+
+    def warning(self, msg: str) -> None:
+        pass
+
+    def error(self, msg: str) -> None:
+        pass
+
 
 def _download_http(
     runtime: VideoRuntime,
@@ -73,7 +101,33 @@ def _download_http(
     return True, str(dest_path)
 
 
-def _download_ytdlp(
+def _ytdlp_opts(
+    runtime: VideoRuntime,
+    *,
+    out_template: str,
+    format_selector: str,
+) -> dict[str, Any]:
+    opts: dict[str, Any] = {
+        "format": format_selector,
+        "outtmpl": out_template,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "logger": _YtdlpSilentLogger(),
+        "socket_timeout": runtime.download_timeout_s,
+        "merge_output_format": "mp4",
+    }
+    try:
+        runtime.ensure_binaries()
+    except Exception:  # noqa: BLE001 — ffmpeg optional for single-file formats
+        pass
+    if runtime.ffmpeg:
+        ffmpeg_dir = str(Path(runtime.ffmpeg).parent)
+        opts["ffmpeg_location"] = ffmpeg_dir
+    return opts
+
+
+def _try_download_ytdlp(
     runtime: VideoRuntime,
     url: str,
     *,
@@ -93,13 +147,11 @@ def _download_ytdlp(
     out_template = str(dest_path.with_suffix("")) + ".%(ext)s"
     title: str | None = None
 
-    opts: dict[str, Any] = {
-        "format": format_selector,
-        "outtmpl": out_template,
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": runtime.download_timeout_s,
-    }
+    opts = _ytdlp_opts(
+        runtime,
+        out_template=out_template,
+        format_selector=format_selector,
+    )
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -120,6 +172,50 @@ def _download_ytdlp(
         downloaded.rename(dest_path)
 
     return True, str(dest_path), title
+
+
+def _format_fallback_chain(requested: str) -> list[str]:
+    chain: list[str] = []
+    for fmt in (requested, *YTDLP_FORMAT_FALLBACKS):
+        if fmt and fmt not in chain:
+            chain.append(fmt)
+    return chain
+
+
+def _enrich_ytdlp_error(message: str) -> str:
+    lower = message.lower()
+    if (
+        "requested format is not available" in lower
+        or "only images are available" in lower
+        or "precondition check failed" in lower
+    ):
+        return f"{message}\n\n{_UPGRADE_HINT}"
+    return message
+
+
+def _download_ytdlp(
+    runtime: VideoRuntime,
+    url: str,
+    *,
+    dest_path: Path,
+    format_selector: str,
+) -> tuple[bool, str, str | None]:
+    errors: list[str] = []
+    title: str | None = None
+
+    for fmt in _format_fallback_chain(format_selector):
+        ok, message, title = _try_download_ytdlp(
+            runtime,
+            url,
+            dest_path=dest_path,
+            format_selector=fmt,
+        )
+        if ok:
+            return True, message, title
+        errors.append(f"[format={fmt}] {message}")
+
+    combined = "yt-dlp download failed after trying multiple formats:\n" + "\n".join(errors)
+    return False, _enrich_ytdlp_error(combined), title
 
 
 def _guess_title_from_url(url: str) -> str:

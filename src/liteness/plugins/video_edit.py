@@ -71,6 +71,7 @@ def _concat_paths(
 
     try:
         return run_command(
+            runtime,
             [
                 runtime.ffmpeg,
                 "-y",
@@ -111,7 +112,7 @@ def _trim_to_file(
             return False, "end must be greater than start"
         args.extend(["-t", str(end_s - start_s)])
     args.extend(["-c", "copy", str(output_path)])
-    return run_command(args, timeout_s=600.0)
+    return run_command(runtime, args, timeout_s=600.0)
 
 
 def cut_segment_handler(runtime: VideoRuntime) -> Any:
@@ -233,6 +234,7 @@ def speed_change_handler(runtime: VideoRuntime) -> Any:
             f"[0:v]setpts=PTS/{float(factor)}[v];[0:a]{atempo}[a]"
         )
         ok, output = run_command(
+            runtime,
             [
                 runtime.ffmpeg,
                 "-y",
@@ -270,6 +272,7 @@ def mute_audio_handler(runtime: VideoRuntime) -> Any:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         ok, output = run_command(
+            runtime,
             [
                 runtime.ffmpeg,
                 "-y",
@@ -309,6 +312,7 @@ def extract_audio_handler(runtime: VideoRuntime) -> Any:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         ok, output = run_command(
+            runtime,
             [
                 runtime.ffmpeg,
                 "-y",
@@ -394,6 +398,7 @@ def add_text_overlay_handler(runtime: VideoRuntime) -> Any:
             f"x={x_expr}:y={y_expr}:enable='{enable}'"
         )
         ok, output = run_command(
+            runtime,
             [
                 runtime.ffmpeg,
                 "-y",
@@ -439,6 +444,7 @@ def crop_handler(runtime: VideoRuntime) -> Any:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         ok, output = run_command(
+            runtime,
             [
                 runtime.ffmpeg,
                 "-y",
@@ -479,6 +485,7 @@ def resize_handler(runtime: VideoRuntime) -> Any:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         ok, output = run_command(
+            runtime,
             [
                 runtime.ffmpeg,
                 "-y",

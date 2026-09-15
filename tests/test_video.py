@@ -22,8 +22,7 @@ from liteness.testing import registry_with_plugins
 
 
 def test_video_plugin_registers_all_tools() -> None:
-    with patch("liteness.plugins.video_utils.find_binary", return_value="ffmpeg"):
-        names = set(registry_with_plugins("video").names())
+    names = set(registry_with_plugins("video").names())
     assert names == {
         "resolve_video",
         "get_video_info",
@@ -36,6 +35,8 @@ def test_video_plugin_registers_all_tools() -> None:
         "speed_change",
         "mute_audio",
         "extract_audio",
+        "transcribe_video",
+        "burn_subtitles",
         "add_text_overlay",
         "crop",
         "resize",
@@ -64,6 +65,9 @@ def test_parse_time_invalid() -> None:
 
 def _runtime(tmp_path: Path) -> VideoRuntime:
     runtime = VideoRuntime.__new__(VideoRuntime)
+    runtime.ffmpeg_mode = "auto"
+    runtime._ffmpeg_path_cfg = None
+    runtime._ffprobe_path_cfg = None
     runtime.ffmpeg = "ffmpeg"
     runtime.ffprobe = "ffprobe"
     runtime.workspace = tmp_path
@@ -71,8 +75,7 @@ def _runtime(tmp_path: Path) -> VideoRuntime:
     runtime.temp_dir.mkdir(parents=True, exist_ok=True)
     runtime.output_dir = tmp_path / "out"
     runtime.output_dir.mkdir(parents=True, exist_ok=True)
-    runtime.vision_provider = None
-    runtime.vision_model = "gemini-2.0-flash"
+    runtime.ctx = None
     runtime.max_frame_count = 12
     runtime.download_timeout_s = 30.0
     runtime.max_download_size_mb = 500
@@ -152,7 +155,10 @@ def test_trim_clip_writes_output(tmp_path: Path) -> None:
         completed.stderr = ""
         return completed
 
-    with patch("liteness.plugins.video.run_command", side_effect=lambda args, **kw: (True, "")):
+    with patch(
+        "liteness.plugins.video.run_command",
+        side_effect=lambda runtime, args, **kw: (True, ""),
+    ):
         result = trim_clip_handler(_runtime(tmp_path))(
             "c1",
             {"input": str(video), "start": "10", "end": "30"},
@@ -183,7 +189,10 @@ def test_concat_clips_success(tmp_path: Path) -> None:
         completed.stderr = ""
         return completed
 
-    with patch("liteness.plugins.video.run_command", side_effect=lambda args, **kw: (True, "")):
+    with patch(
+        "liteness.plugins.video.run_command",
+        side_effect=lambda runtime, args, **kw: (True, ""),
+    ):
         result = concat_clips_handler(_runtime(tmp_path))(
             "c1",
             {"inputs": [str(a), str(b)]},
@@ -199,7 +208,7 @@ def test_extract_frames_evenly_spaced(tmp_path: Path) -> None:
 
     calls: list[list[str]] = []
 
-    def fake_run(args, **kwargs):  # noqa: ANN001
+    def fake_run(runtime, args, **kwargs):  # noqa: ANN001
         calls.append(list(args))
         out_path = Path(args[-1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,7 +245,7 @@ def test_analyze_video_without_vision(tmp_path: Path) -> None:
         ],
     }
 
-    def fake_run(args, **kwargs):  # noqa: ANN001
+    def fake_run(runtime, args, **kwargs):  # noqa: ANN001
         if "-print_format" in args:
             return True, json.dumps(probe_payload)
         out_path = Path(args[-1])
@@ -255,7 +264,7 @@ def test_analyze_video_without_vision(tmp_path: Path) -> None:
 
     assert not result.is_error
     assert "extracted_frames" in result.content
-    assert "vision_provider not configured" in result.content
+    assert "session LLM handles reasoning" in result.content
 
 
 def test_load_video_editor_preset() -> None:
@@ -319,9 +328,9 @@ def test_video_editor_preset_run_with_mock_llm(tmp_path: Path) -> None:
     )
 
     session = Session()
-    with patch("liteness.plugins.video_utils.find_binary", return_value="ffmpeg"), patch(
+    with patch(
         "liteness.plugins.video.run_command",
-        side_effect=lambda args, **kw: (
+        side_effect=lambda runtime, args, **kw: (
             (True, json.dumps(probe_payload))
             if "-print_format" in args
             else (True, "")

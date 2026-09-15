@@ -25,8 +25,7 @@ def _runtime(tmp_path: Path) -> VideoRuntime:
     runtime.temp_dir.mkdir(parents=True, exist_ok=True)
     runtime.output_dir = tmp_path / "out"
     runtime.output_dir.mkdir(parents=True, exist_ok=True)
-    runtime.vision_provider = None
-    runtime.vision_model = "gemini-2.0-flash"
+    runtime.ctx = None
     runtime.max_frame_count = 12
     runtime.download_timeout_s = 30.0
     runtime.max_download_size_mb = 500

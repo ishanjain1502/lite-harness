@@ -11,6 +11,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from liteness.context import Context
+from liteness.plugins.video_ffmpeg import (
+    FFmpegUnavailable,
+    probe_duration_with_ffmpeg,
+    probe_video_info_with_ffmpeg,
+    resolve_ffmpeg_binaries,
+)
 from liteness.tools import ToolResult
 
 _TIME_RE = re.compile(
@@ -126,6 +133,11 @@ def edited_output_path(input_path: Path, suffix: str = ".mp4") -> Path:
     return input_path.parent / f"{input_path.stem}_edited_{ts}{suffix}"
 
 
+def subtitled_output_path(input_path: Path, suffix: str = ".mp4") -> Path:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return input_path.parent / f"{input_path.stem}_subtitled_{ts}{suffix}"
+
+
 def step_output_path(
     input_path: Path,
     label: str,
@@ -138,11 +150,15 @@ def step_output_path(
 
 
 class VideoRuntime:
-    """Per-install ffmpeg paths, workspace, downloads, and vision settings."""
+    """Per-install ffmpeg paths, workspace, downloads, and plugin settings."""
 
-    def __init__(self, config: dict[str, Any]) -> None:
-        self.ffmpeg = find_binary("ffmpeg", config.get("ffmpeg_path"))
-        self.ffprobe = find_binary("ffprobe", config.get("ffprobe_path"))
+    def __init__(self, config: dict[str, Any], *, ctx: Context | None = None) -> None:
+        self.ctx = ctx
+        self.ffmpeg_mode = str(config.get("ffmpeg_mode", "auto"))
+        self._ffmpeg_path_cfg = config.get("ffmpeg_path")
+        self._ffprobe_path_cfg = config.get("ffprobe_path")
+        self.ffmpeg: str | None = None
+        self.ffprobe: str | None = None
         workspace = config.get("workspace")
         self.workspace = Path(workspace).resolve() if workspace else None
 
@@ -158,8 +174,6 @@ class VideoRuntime:
             self.output_dir = self.workspace / self.output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self.vision_provider = config.get("vision_provider")
-        self.vision_model = config.get("vision_model", "gemini-2.0-flash")
         self.max_frame_count = int(config.get("max_frame_count", 12))
         self.download_timeout_s = float(config.get("download_timeout_s", 600))
         self.max_download_size_mb = int(config.get("max_download_size_mb", 500))
@@ -169,6 +183,25 @@ class VideoRuntime:
         self.ytdlp_format = config.get(
             "ytdlp_format",
             "bestvideo+bestaudio/best",
+        )
+        self.whisper_model = str(config.get("whisper_model", "small"))
+        self.whisper_device = str(config.get("whisper_device", "cpu"))
+        self.whisper_compute_type = str(config.get("whisper_compute_type", "int8"))
+        whisper_language = config.get("whisper_language")
+        self.whisper_language = (
+            str(whisper_language).strip() if whisper_language else None
+        )
+        self.subtitle_font_size = int(config.get("subtitle_font_size", 24))
+        self.subtitle_margin_v = int(config.get("subtitle_margin_v", 30))
+
+    def ensure_binaries(self) -> None:
+        if self.ffmpeg is not None:
+            return
+        self.ffmpeg, self.ffprobe = resolve_ffmpeg_binaries(
+            mode=self.ffmpeg_mode,
+            temp_dir=self.temp_dir,
+            ffmpeg_path=self._ffmpeg_path_cfg,
+            ffprobe_path=self._ffprobe_path_cfg,
         )
 
     def resolve(self, raw: str) -> Path:
@@ -199,13 +232,23 @@ class VideoRuntime:
 
 
 def run_command(
+    runtime: VideoRuntime,
     args: list[str],
     *,
     timeout_s: float = 300.0,
 ) -> tuple[bool, str]:
     try:
+        runtime.ensure_binaries()
+    except FFmpegUnavailable as exc:
+        return False, str(exc)
+
+    cmd = list(args)
+    if cmd and cmd[0] is None:
+        cmd[0] = runtime.ffmpeg
+
+    try:
         completed = subprocess.run(
-            args,
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -225,47 +268,67 @@ def run_command(
 
 
 def probe_duration(runtime: VideoRuntime, path: Path) -> float | None:
-    ok, output = run_command(
-        [
-            runtime.ffprobe,
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ],
-        timeout_s=60.0,
-    )
-    if not ok:
-        return None
     try:
-        return float(output.strip())
-    except ValueError:
+        runtime.ensure_binaries()
+    except FFmpegUnavailable:
         return None
+
+    if runtime.ffprobe:
+        ok, output = run_command(
+            runtime,
+            [
+                runtime.ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            timeout_s=60.0,
+        )
+        if not ok:
+            return None
+        try:
+            return float(output.strip())
+        except ValueError:
+            return None
+
+    assert runtime.ffmpeg is not None
+    return probe_duration_with_ffmpeg(runtime.ffmpeg, path)
 
 
 def probe_video_info(runtime: VideoRuntime, path: Path) -> dict[str, Any] | None:
-    ok, output = run_command(
-        [
-            runtime.ffprobe,
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            str(path),
-        ],
-        timeout_s=60.0,
-    )
-    if not ok:
-        return None
     try:
-        return json.loads(output)
-    except json.JSONDecodeError:
+        runtime.ensure_binaries()
+    except FFmpegUnavailable:
         return None
+
+    if runtime.ffprobe:
+        ok, output = run_command(
+            runtime,
+            [
+                runtime.ffprobe,
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(path),
+            ],
+            timeout_s=60.0,
+        )
+        if not ok:
+            return None
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            return None
+
+    assert runtime.ffmpeg is not None
+    return probe_video_info_with_ffmpeg(runtime.ffmpeg, path)
 
 
 def resolve_output_path(

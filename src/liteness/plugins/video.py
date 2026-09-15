@@ -1,8 +1,7 @@
-"""Video plugin — natural-language video editing via ffmpeg tools and vision analysis."""
+"""Video plugin — natural-language video editing via ffmpeg tools."""
 
 from __future__ import annotations
 
-import os
 import re
 import tempfile
 from pathlib import Path
@@ -20,6 +19,8 @@ from liteness.plugins.video_edit import (
     speed_change_handler,
 )
 from liteness.plugins.video_plan import plan_edits_handler
+from liteness.plugins.video_subtitles import burn_subtitles_handler
+from liteness.plugins.video_transcribe import transcribe_video_handler
 from liteness.plugins.video_utils import (
     VideoRuntime,
     find_binary,
@@ -37,52 +38,6 @@ _parse_time = parse_time
 _format_time = format_time
 _find_binary = find_binary
 _invalid_args = invalid_args
-
-
-def _describe_frames_with_gemini(
-    frame_paths: list[Path],
-    timestamps: list[float],
-    *,
-    model: str,
-) -> str:
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError as exc:
-        raise RuntimeError(
-            "analyze_video with vision requires google-genai: pip install 'lite-ness[google]'"
-        ) from exc
-
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY (or GEMINI_API_KEY) is not set")
-
-    client = genai.Client(api_key=api_key)
-    parts: list[Any] = [
-        types.Part(
-            text=(
-                "You are helping a video editor agent. Describe what happens in this "
-                "video at each timestamp. For each frame, note the timestamp, visible "
-                "scene, people/objects, on-screen text, and whether it looks like an "
-                "intro/outro/transition. Be concise and structured."
-            )
-        )
-    ]
-    for path, t in zip(frame_paths, timestamps, strict=True):
-        image_bytes = path.read_bytes()
-        parts.append(types.Part(text=f"Timestamp {format_time(t)} ({t:.3f}s):"))
-        parts.append(
-            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
-        )
-
-    response = client.models.generate_content(
-        model=model,
-        contents=[types.Content(role="user", parts=parts)],
-    )
-    text = getattr(response, "text", None)
-    if not text:
-        return "Vision model returned no description."
-    return text
 
 
 def get_video_info_handler(runtime: VideoRuntime) -> Any:
@@ -189,7 +144,7 @@ def trim_clip_handler(runtime: VideoRuntime) -> Any:
             args.extend(["-t", str(end_s - start_s)])
         args.extend(["-c", "copy", str(output_path)])
 
-        ok, output = run_command(args, timeout_s=600.0)
+        ok, output = run_command(runtime, args, timeout_s=600.0)
         if not ok:
             return ToolResult(
                 call_id=call_id,
@@ -250,6 +205,7 @@ def concat_clips_handler(runtime: VideoRuntime) -> Any:
 
         try:
             ok, output = run_command(
+                runtime,
                 [
                     runtime.ffmpeg,
                     "-y",
@@ -345,6 +301,7 @@ def extract_frames_handler(runtime: VideoRuntime) -> Any:
         for idx, t in enumerate(times):
             frame_path = out_dir / f"frame_{idx:03d}_{format_time(t).replace(':', '-')}.jpg"
             ok, output = run_command(
+                runtime,
                 [
                     runtime.ffmpeg,
                     "-y",
@@ -415,49 +372,15 @@ def analyze_video_handler(runtime: VideoRuntime) -> Any:
                 error_code=frames_result.error_code,
             )
 
-        frame_lines = frames_result.content.splitlines()
-        frame_paths: list[Path] = []
-        timestamps: list[float] = []
-        for line in frame_lines:
-            if "->" not in line:
-                continue
-            left, right = line.split("->", 1)
-            frame_paths.append(Path(right.strip()))
-            ts_match = re.search(r"\(([\d.]+)s\)", left)
-            if ts_match:
-                timestamps.append(float(ts_match.group(1)))
-
         info_result = get_video_info_handler(runtime)(call_id, {"path": str(input_path)})
         header = info_result.content if not info_result.is_error else ""
 
-        if runtime.vision_provider == "google":
-            try:
-                description = _describe_frames_with_gemini(
-                    frame_paths,
-                    timestamps,
-                    model=runtime.vision_model,
-                )
-            except RuntimeError as exc:
-                return ToolResult(
-                    call_id=call_id,
-                    name="analyze_video",
-                    content=str(exc),
-                    is_error=True,
-                    error_code="VISION_UNAVAILABLE",
-                )
-            body = (
-                f"{header}\n\n"
-                f"extracted_frames:\n{frames_result.content}\n\n"
-                f"scene_analysis:\n{description}"
-            )
-        else:
-            body = (
-                f"{header}\n\n"
-                f"extracted_frames:\n{frames_result.content}\n\n"
-                "scene_analysis: (vision_provider not configured — set vision_provider: "
-                "google in plugin config and GOOGLE_API_KEY to enable automatic scene "
-                "descriptions; otherwise infer edits from frame timestamps and user prompt)"
-            )
+        body = (
+            f"{header}\n\n"
+            f"extracted_frames:\n{frames_result.content}\n\n"
+            "Use frame timestamps, metadata, and the user's prompt to plan edits. "
+            "The session LLM handles reasoning; this tool only samples frames."
+        )
 
         return ToolResult(call_id=call_id, name="analyze_video", content=body)
 
@@ -517,8 +440,7 @@ def _register_core_tools(ctx: Context, runtime: VideoRuntime) -> None:
             name="analyze_video",
             description=(
                 "Understand video content for natural-language editing. Extracts "
-                "sample frames and (when vision_provider is configured) describes "
-                "what happens at each timestamp."
+                "sample frames at evenly spaced timestamps plus ffprobe metadata."
             ),
             parameters={
                 "type": "object",
@@ -561,6 +483,33 @@ def _register_core_tools(ctx: Context, runtime: VideoRuntime) -> None:
             },
             handler=plan_edits_handler(runtime, analyze_handler),
             timeout_s=600.0,
+            idempotent=True,
+        )
+    )
+    ctx.register_tool(
+        ToolDefinition(
+            name="transcribe_video",
+            description=(
+                "Transcribe speech from a video using local faster-whisper. "
+                "Writes an SRT file and returns timed segments as JSON."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "Path to the video file"},
+                    "output_srt": {
+                        "type": "string",
+                        "description": "Optional SRT output path (default: temp dir)",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Language code (default: auto-detect from config)",
+                    },
+                },
+                "required": ["input"],
+            },
+            handler=transcribe_video_handler(runtime),
+            timeout_s=1800.0,
             idempotent=True,
         )
     )
@@ -710,6 +659,36 @@ def _register_core_tools(ctx: Context, runtime: VideoRuntime) -> None:
     )
     ctx.register_tool(
         ToolDefinition(
+            name="burn_subtitles",
+            description=(
+                "Hard-burn an SRT subtitle file into a video. Use after transcribe_video."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "Source video path"},
+                    "srt": {"type": "string", "description": "Path to SRT subtitle file"},
+                    "output": {
+                        "type": "string",
+                        "description": "Output path (auto: {stem}_subtitled_{timestamp}.mp4)",
+                    },
+                    "font_size": {
+                        "type": "integer",
+                        "description": "Subtitle font size (default from config)",
+                    },
+                    "margin_v": {
+                        "type": "integer",
+                        "description": "Bottom margin in pixels (default from config)",
+                    },
+                },
+                "required": ["input", "srt"],
+            },
+            handler=burn_subtitles_handler(runtime),
+            timeout_s=1200.0,
+        )
+    )
+    ctx.register_tool(
+        ToolDefinition(
             name="add_text_overlay",
             description="Add text overlay to a video using ffmpeg drawtext.",
             parameters={
@@ -798,11 +777,7 @@ class VideoPlugin:
     name = "video"
 
     def install(self, ctx: Context, config: dict[str, Any]) -> None:
-        try:
-            runtime = VideoRuntime(config)
-        except FileNotFoundError as exc:
-            raise RuntimeError(str(exc)) from exc
-
+        runtime = VideoRuntime(config, ctx=ctx)
         ctx.services["video"] = runtime
         _register_core_tools(ctx, runtime)
 

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
 
+from liteness.plugins.video_llm import session_llm_complete
 from liteness.plugins.video_utils import (
     VALID_EDIT_ACTIONS,
     VideoRuntime,
@@ -116,31 +116,22 @@ def _metadata_fallback_plan(
         "steps": steps,
         "output_path": str(edited_output_path(video_path)),
         "warning": (
-            "Vision unavailable — plan generated from prompt keywords only. "
+            "Session LLM unavailable — plan generated from prompt keywords only. "
             "Review timestamps carefully before executing."
         ),
     }
 
 
-def _plan_with_gemini(
+def _plan_with_session_llm(
+    runtime: VideoRuntime,
     *,
-    model: str,
     video_path: Path,
     prompt: str,
     analysis: str,
     duration_s: float | None,
 ) -> dict[str, Any]:
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError as exc:
-        raise RuntimeError(
-            "plan_edits with vision requires google-genai: pip install 'lite-ness[google]'"
-        ) from exc
-
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY (or GEMINI_API_KEY) is not set")
+    if runtime.ctx is None:
+        raise RuntimeError("session LLM not available")
 
     duration_hint = f"{duration_s:.3f}s" if duration_s is not None else "unknown"
     system = (
@@ -159,18 +150,7 @@ def _plan_with_gemini(
         f"User prompt: {prompt}\n\n"
         f"Video analysis:\n{analysis}"
     )
-
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model,
-        contents=[
-            types.Content(
-                role="user",
-                parts=[types.Part(text=f"{system}\n\n{user_text}")],
-            )
-        ],
-    )
-    text = getattr(response, "text", None) or ""
+    text = session_llm_complete(runtime.ctx, system=system, user=user_text)
     plan = _extract_json_object(text)
     plan.setdefault("video_path", str(video_path))
     if duration_s is not None:
@@ -222,23 +202,17 @@ def plan_edits_handler(
         duration_s = probe_duration(runtime, input_path)
         warning: str | None = None
 
-        if runtime.vision_provider == "google":
-            try:
-                plan = _plan_with_gemini(
-                    model=runtime.vision_model,
-                    video_path=input_path,
-                    prompt=prompt.strip(),
-                    analysis=analysis_result.content,
-                    duration_s=duration_s,
-                )
-            except RuntimeError as exc:
-                plan = _metadata_fallback_plan(input_path, prompt.strip(), duration_s)
-                warning = str(exc)
-        else:
-            plan = _metadata_fallback_plan(input_path, prompt.strip(), duration_s)
-            warning = (
-                "vision_provider not configured — using metadata-only fallback plan"
+        try:
+            plan = _plan_with_session_llm(
+                runtime,
+                video_path=input_path,
+                prompt=prompt.strip(),
+                analysis=analysis_result.content,
+                duration_s=duration_s,
             )
+        except (RuntimeError, ValueError) as exc:
+            plan = _metadata_fallback_plan(input_path, prompt.strip(), duration_s)
+            warning = str(exc)
 
         errors = validate_edit_plan(plan, duration_s=duration_s)
         if errors:

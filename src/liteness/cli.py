@@ -36,6 +36,26 @@ def _format_size(content: str) -> str:
     return f"{size} B"
 
 
+def _format_error_message(raw: str, *, max_len: int = 240) -> str:
+    """Extract a human-readable message from plain text or JSON API errors."""
+    text = raw.strip()
+    if text.startswith("{"):
+        try:
+            import json
+
+            data = json.loads(text)
+            nested = data.get("error")
+            if isinstance(nested, dict) and nested.get("message"):
+                text = str(nested["message"])
+            elif data.get("message"):
+                text = str(data["message"])
+        except json.JSONDecodeError:
+            pass
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
+
 def _summarize_session(session: Session, result) -> str:
     lines = [f"Session: {session.session_id}", ""]
     if session.log_path is not None:
@@ -45,6 +65,7 @@ def _summarize_session(session: Session, result) -> str:
     lines.append(f"Turn {turn}")
 
     current_step: int | None = None
+    last_error: str | None = None
     for event in session.events:
         if event.type == "step/start":
             current_step = event.payload.get("step")
@@ -58,6 +79,10 @@ def _summarize_session(session: Session, result) -> str:
                 lines.append(f"    -> error: {content[:80]}")
             else:
                 lines.append(f"    -> result: {_format_size(content)}")
+        elif event.type == "error":
+            message = event.payload.get("message", "")
+            if message:
+                last_error = _format_error_message(str(message))
         elif event.type == "assistant/message" and event.step == current_step:
             if not any(
                 e.type == "tool/call" and e.step == current_step for e in session.events
@@ -72,6 +97,8 @@ def _summarize_session(session: Session, result) -> str:
         lines.append(f"{status_label} ({result.stop_reason.value})")
     else:
         lines.append(status_label)
+    if last_error and getattr(result, "status", None) == "error":
+        lines.append(f"Reason: {last_error}")
     return "\n".join(lines)
 
 
@@ -220,8 +247,14 @@ def _build_loop(
     if model is None:
         model = "mock" if args.provider == "mock" else default_model(args.provider)
 
+    llm = _resolve_llm(args, session)
+    if runtime is not None:
+        from liteness.plugins.video_llm import inject_session_llm
+
+        inject_session_llm(runtime.ctx, llm, model)
+
     return AgentLoop(
-        llm=_resolve_llm(args, session),
+        llm=llm,
         tools=registry,
         config=LoopConfig(
             max_steps_per_turn=args.max_steps,
