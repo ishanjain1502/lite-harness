@@ -457,6 +457,47 @@ def export_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def analytics_serve_command(args: argparse.Namespace) -> int:
+    from liteness.analytics.serve import serve_analytics
+    from liteness.analytics.store import AnalyticsStore
+
+    client = None
+    if not args.no_clickhouse:
+        from liteness.clickhouse.client import (
+            HttpClickHouseClient,
+            clickhouse_credentials_from_config,
+        )
+
+        url = (
+            args.clickhouse_url
+            or os.environ.get("LITENESS_CLICKHOUSE_URL")
+            or "http://localhost:8123"
+        )
+        database = args.clickhouse_database or "liteness"
+        user, password = clickhouse_credentials_from_config()
+        try:
+            client = HttpClickHouseClient(
+                url=url,
+                database=database,
+                user=user,
+                password=password,
+            )
+            client.ensure_schema()
+        except Exception:
+            print(
+                "Warning: ClickHouse unavailable; analytics will use JSONL sessions only.",
+                file=sys.stderr,
+            )
+            client = None
+
+    store = AnalyticsStore(
+        clickhouse_client=client,
+        sessions_dir=args.sessions_dir,
+    )
+    serve_analytics(store, host=args.host, port=args.port)
+    return 0
+
+
 def _make_clickhouse_exporter(config: dict[str, Any]):
     from liteness.clickhouse.client import (
         HttpClickHouseClient,
@@ -808,6 +849,27 @@ def main(argv: list[str] | None = None) -> int:
     export_ch_parser.add_argument("--clickhouse-url", default=None, help="ClickHouse HTTP URL")
     export_ch_parser.add_argument("--clickhouse-database", default="liteness")
     export_ch_parser.set_defaults(func=export_clickhouse_command)
+
+    analytics_parser = sub.add_parser("analytics", help="Harness analytics dashboard")
+    analytics_sub = analytics_parser.add_subparsers(dest="analytics_command", required=True)
+    analytics_serve_parser = analytics_sub.add_parser(
+        "serve", help="Start local analytics UI"
+    )
+    analytics_serve_parser.add_argument("--host", default="127.0.0.1")
+    analytics_serve_parser.add_argument("--port", type=int, default=8765)
+    analytics_serve_parser.add_argument(
+        "--sessions-dir",
+        default=".sessions",
+        help="Directory of JSONL session logs to merge (default: .sessions)",
+    )
+    analytics_serve_parser.add_argument("--clickhouse-url", default=None)
+    analytics_serve_parser.add_argument("--clickhouse-database", default="liteness")
+    analytics_serve_parser.add_argument(
+        "--no-clickhouse",
+        action="store_true",
+        help="Do not query ClickHouse; use JSONL sessions only",
+    )
+    analytics_serve_parser.set_defaults(func=analytics_serve_command)
 
     eval_parser = sub.add_parser("eval", help="Evaluate recorded agent sessions")
     eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True)

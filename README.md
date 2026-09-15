@@ -174,4 +174,8 @@ liteness run "Read README.md and summarize." --session-file ./sessions/demo.json
 
 # Build report from an existing session log
 liteness report ./sessions/demo.jsonl
+
+# Historical analytics UI (ClickHouse + local .sessions/ JSONL)
+liteness analytics serve
+# open http://127.0.0.1:8765 — use --sessions-dir and --no-clickhouse to customize
 ```

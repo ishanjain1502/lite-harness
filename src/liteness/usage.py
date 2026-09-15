@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # Rough heuristic for mock / missing usage fields.
 _CHARS_PER_TOKEN = 4
-_COST_PER_1K_TOKENS_USD = 0.002
+_COST_PER_1K_TOKENS_USD = 0.000015
 
 
 def estimate_tokens(text: str) -> int:

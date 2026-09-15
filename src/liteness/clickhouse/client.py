@@ -79,6 +79,8 @@ class ClickHouseClient(Protocol):
 
     def insert_rows(self, table: str, rows: list[dict[str, Any]]) -> None: ...
 
+    def query_json(self, sql: str) -> list[dict[str, Any]]: ...
+
 
 class FakeClickHouseClient:
     def __init__(
@@ -86,10 +88,13 @@ class FakeClickHouseClient:
         *,
         fail_with: Exception | None = None,
         insert_delay_s: float = 0.0,
+        query_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.calls: list[tuple[str, list[dict]]] = []
+        self.queries: list[str] = []
         self.fail_with = fail_with
         self.insert_delay_s = insert_delay_s
+        self.query_results = query_results or {}
 
     def ensure_schema(self) -> None:
         pass
@@ -100,6 +105,15 @@ class FakeClickHouseClient:
         if self.insert_delay_s:
             time.sleep(self.insert_delay_s)
         self.calls.append((table, list(rows)))
+
+    def query_json(self, sql: str) -> list[dict[str, Any]]:
+        self.queries.append(sql)
+        if self.fail_with is not None:
+            raise self.fail_with
+        for pattern, rows in self.query_results.items():
+            if pattern in sql:
+                return list(rows)
+        return []
 
 
 class HttpClickHouseClient:
@@ -146,7 +160,21 @@ class HttpClickHouseClient:
         body = "\n".join(json.dumps(row) for row in rows)
         self._post_query(query, body=body)
 
-    def _post_query(self, query: str, *, body: str = "") -> None:
+    def query_json(self, sql: str) -> list[dict[str, Any]]:
+        query = sql.strip().rstrip(";")
+        if "FORMAT" not in query.upper():
+            query = f"{query} FORMAT JSONEachRow"
+        body = self._post_query(query, expect_body=True)
+        if not body.strip():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in body.splitlines():
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+        return rows
+
+    def _post_query(self, query: str, *, body: str = "", expect_body: bool = False) -> str:
         params = (
             f"database={quote(self.database)}"
             f"&query={quote(query)}"
@@ -160,3 +188,6 @@ class HttpClickHouseClient:
             raise RuntimeError(
                 f"ClickHouse HTTP {response.status_code}: {response.text}"
             )
+        if expect_body:
+            return response.text
+        return ""
