@@ -213,6 +213,10 @@ def _build_loop_from_runtime(
     if config.provider == "replay":
         llm = ReplayLLMProvider.from_session(session)
 
+    from liteness.plugins.video_llm import inject_session_llm
+
+    inject_session_llm(runtime.ctx, llm, model)
+
     return AgentLoop(
         llm=llm,
         tools=runtime.ctx.tools,
